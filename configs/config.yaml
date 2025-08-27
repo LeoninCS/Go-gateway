@@ -1,0 +1,40 @@
+# File: configs/config.yaml
+gateway:
+  port: ":8080"
+
+database:
+  host: "172.30.48.1"
+  port: 3306
+  user: "root"
+  password: "123456"
+  dbname: "go_gateway"
+
+services:
+  - name: "service-a"
+    path: "/service-a/"
+    # 负载均衡策略，可选 'round-robin' 或 'least-connections'
+    # 如果不填，默认为 'round-robin'
+    load_balancing_strategy: "round-robin" 
+    endpoints:
+      - url: "http://localhost:8081"
+        # 健康检查配置
+        health_check:
+          path: "/health"      # 健康检查路径
+          interval: "10s"      # 检查间隔
+      - url: "http://localhost:8083" # Service A 的新实例
+        health_check:
+          path: "/health"
+          interval: "10s"
+
+  - name: "service-b"
+    path: "/service-b/"
+    load_balancing_strategy: "round-robin"
+    endpoints:
+      - url: "http://localhost:8082"
+        health_check:
+          path: "/health"
+          interval: "10s"
+
+jwt:
+  secret_key: "your-very-secret-and-long-key-that-no-one-should-know" # 生产环境中应使用更复杂或随机生成的密钥
+  duration_minutes: 120 # Token 有效期，例如 120 分钟 (2小时)
