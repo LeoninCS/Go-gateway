@@ -47,7 +47,7 @@ func Middleware(cfg *config.JWTConfig) func(http.Handler) http.Handler {
 }
 
 // GetClaimsFromContext 从请求的 context 中安全地提取 claims
-func GetClaimsFromContext(ctx context.Context) (*MyClaims, bool) {
-	claims, ok := ctx.Value(key).(*MyClaims)
+func GetClaimsFromContext(ctx context.Context) (*Claims, bool) {
+	claims, ok := ctx.Value(key).(*Claims)
 	return claims, ok
 }

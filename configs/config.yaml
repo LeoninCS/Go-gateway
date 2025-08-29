@@ -1,4 +1,5 @@
-# File: configs/config.yaml
+# 配置文件：configs/config.yaml
+# 说明：这是API网关的配置文件，包含网关端口、数据库连接信息、服务列表及其负载均衡策略、JWT配置等。
 gateway:
   port: ":8080"
 

@@ -1,3 +1,4 @@
+// 业务逻辑层：处理JWT的生成和验证
 package auth
 
 import (
@@ -8,7 +9,7 @@ import (
 )
 
 // MyClaims 定义了我们想要在 JWT 中存储的数据
-type MyClaims struct {
+type Claims struct {
 	UserID   int64  `json:"user_id"`
 	Username string `json:"username"`
 	jwt.RegisteredClaims
@@ -16,7 +17,7 @@ type MyClaims struct {
 
 // GenerateToken 生成一个新的 JWT 字符串
 func GenerateToken(userID int64, username string, secretKey []byte, duration time.Duration) (string, error) {
-	claims := MyClaims{
+	claims := Claims{
 		UserID:   userID,
 		Username: username,
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -32,8 +33,8 @@ func GenerateToken(userID int64, username string, secretKey []byte, duration tim
 }
 
 // ValidateToken 验证 token 并返回 claims
-func ValidateToken(tokenString string, secretKey []byte) (*MyClaims, error) {
-	claims := &MyClaims{}
+func ValidateToken(tokenString string, secretKey []byte) (*Claims, error) {
+	claims := &Claims{}
 	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
 		// 确保签名算法是我们期望的
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {

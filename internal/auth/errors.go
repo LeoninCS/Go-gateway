@@ -1,3 +1,4 @@
+// 业务逻辑层错误定义
 package auth
 
 import "errors"

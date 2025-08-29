@@ -1,4 +1,4 @@
-// 文件：cmd/service-a/main.go
+// 这是一个简单的HTTP服务示例，展示了如何为健康检查创建专用的处理器。
 package main
 
 import (
