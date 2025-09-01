@@ -44,7 +44,12 @@ func (g *Gateway) registerRoutes() {
 	// 1. 注册公共路由 (Public Routes)
 	// ===================================================================
 	g.Mux.HandleFunc("POST /register", g.AuthHandler.Register)
+	g.Mux.HandleFunc("POST /unregister", g.AuthHandler.Unregister)
 	g.Mux.HandleFunc("POST /login", g.AuthHandler.Login)
+	g.Mux.HandleFunc("POST /logout", g.AuthHandler.Logout)
+	g.Mux.HandleFunc("POST /send_verification_code", g.AuthHandler.SendVerificationCode)
+	g.Mux.HandleFunc("POST /reset_password", g.AuthHandler.ResetPassword)
+	g.Mux.HandleFunc("POST /change_password", g.AuthHandler.ChangePassword)
 	g.Mux.HandleFunc("GET /healthz", g.HealthHandler.Healthz)
 
 	// ===================================================================
@@ -84,7 +89,7 @@ func (g *Gateway) registerRoutes() {
 		protectedHandler := jwtMiddleware(http.StripPrefix(serviceCfg.Path, lb))
 
 		// 注册路由，注意这里使用了方法+路径的模式匹配
-		g.Mux.Handle(serviceCfg.Path+"/*", protectedHandler)
+		g.Mux.Handle(serviceCfg.Path, protectedHandler)
 
 		log.Printf("Registered PROTECTED service '%s' at path '%s' with %d backends. Strategy: '%s'",
 			serviceCfg.Name, serviceCfg.Path, len(backends), serviceCfg.LoadBalancingStrategy)

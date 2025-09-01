@@ -8,8 +8,8 @@ type UserRepository interface {
 	FindByUsername(username string) (*models.User, error)
 	// 可以根据需要添加更多方法，如:
 	// FindByID(id uint) (*models.User, error)
-	// Update(user *models.User) error
-	// Delete(id uint) error
+	Update(user *models.User) error
+	Delete(id uint) error
 }
 
 // 在这里定义其他模型的 Repository 接口，例如:

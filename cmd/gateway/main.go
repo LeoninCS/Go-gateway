@@ -6,12 +6,12 @@ import (
 
 	"gateway.example/go-gateway/internal/auth"
 	"gateway.example/go-gateway/internal/config"
-	"gateway.example/go-gateway/internal/database"
 	"gateway.example/go-gateway/internal/gateway"
 	"gateway.example/go-gateway/internal/health"
 	"gateway.example/go-gateway/internal/models"
 	"gateway.example/go-gateway/internal/repository"
 	"gateway.example/go-gateway/internal/server"
+	"gateway.example/go-gateway/pkg/database"
 )
 
 func main() {

@@ -56,3 +56,19 @@ func contains(s, substr string) bool {
 		s[:len(substr)] == substr ||
 		contains(s[1:], substr)
 }
+
+func (r *GormUserRepository) Update(user *models.User) error {
+	result := r.db.Save(user)
+	if result.Error != nil {
+		return result.Error
+	}
+	return nil
+}
+
+func (r *GormUserRepository) Delete(id uint) error {
+	result := r.db.Delete(&models.User{}, id)
+	if result.Error != nil {
+		return result.Error
+	}
+	return nil
+}

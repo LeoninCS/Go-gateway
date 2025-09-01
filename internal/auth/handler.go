@@ -77,3 +77,122 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
+
+func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Username    string `json:"username"`
+		OldPassword string `json:"old_password"`
+		NewPassword string `json:"new_password"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error": "Invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
+	err := h.authService.ChangePassword(req.Username, req.OldPassword, req.NewPassword)
+	if err != nil {
+		if err == ErrInvalidCredentials {
+			http.Error(w, `{"error": "`+err.Error()+`"}`, http.StatusUnauthorized)
+		} else {
+			http.Error(w, `{"error": "Internal server error"}`, http.StatusInternalServerError)
+		}
+		return
+	}
+
+	response := map[string]string{"message": "Password changed successfully"}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func (h *AuthHandler) ResetPassword(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Username         string `json:"username"`
+		Phone            string `json:"phone"`
+		VerificationCode string `json:"verification_code"`
+		NewPassword      string `json:"new_password"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error": "Invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
+	err := h.authService.ResetPassword(req.Username, req.Phone, req.VerificationCode, req.NewPassword)
+	if err != nil {
+		if err == ErrInvalidVerificationCode || err == ErrUserNotFound || err == ErrPhoneNotMatch {
+			http.Error(w, `{"error": "`+err.Error()+`"}`, http.StatusBadRequest)
+		} else {
+			http.Error(w, `{"error": "Internal server error"}`, http.StatusInternalServerError)
+		}
+		return
+	}
+
+	response := map[string]string{"message": "Password reset successfully"}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func (h *AuthHandler) Unregister(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error": "Invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
+	err := h.authService.Unregister(req.Username, req.Password)
+	if err != nil {
+		if err == ErrInvalidCredentials || err == ErrUserNotFound {
+			http.Error(w, `{"error": "`+err.Error()+`"}`, http.StatusBadRequest)
+		} else {
+			http.Error(w, `{"error": "Internal server error"}`, http.StatusInternalServerError)
+		}
+		return
+	}
+
+	response := map[string]string{"message": "User unregistered successfully"}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token string `json:"token"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error": "Invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
+	err := h.authService.Logout(req.Token)
+	if err != nil {
+		http.Error(w, `{"error": "Internal server error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]string{"message": "Logged out successfully"}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func (h *AuthHandler) SendVerificationCode(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Username string `json:"username"`
+		Phone    string `json:"phone"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error": "Invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
+	message, err := h.authService.SendVerificationCode(req.Username, req.Phone)
+	if err != nil {
+		http.Error(w, `{"error": "Internal server error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]string{"message": message}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}

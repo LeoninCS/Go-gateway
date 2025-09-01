@@ -1,5 +1,5 @@
 // 业务逻辑层：处理JWT的生成和验证
-package auth
+package jwt
 
 import (
 	"fmt"
@@ -8,7 +8,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// MyClaims 定义了我们想要在 JWT 中存储的数据
+// Claims 定义了我们想要在 JWT 中存储的数据
 type Claims struct {
 	UserID   int64  `json:"user_id"`
 	Username string `json:"username"`

@@ -7,6 +7,7 @@ import (
 
 	// 确保导入你的 config 包
 	"gateway.example/go-gateway/internal/config"
+	"gateway.example/go-gateway/pkg/jwt"
 )
 
 // claimsKey 是一个私有类型，用于在 context 中创建唯一的键
@@ -31,7 +32,7 @@ func Middleware(cfg *config.JWTConfig) func(http.Handler) http.Handler {
 			}
 
 			tokenString := parts[1]
-			claims, err := ValidateToken(tokenString, []byte(cfg.SecretKey))
+			claims, err := jwt.ValidateToken(tokenString, []byte(cfg.SecretKey))
 			if err != nil {
 				http.Error(w, "Invalid token: "+err.Error(), http.StatusUnauthorized)
 				return
@@ -44,10 +45,4 @@ func Middleware(cfg *config.JWTConfig) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
-}
-
-// GetClaimsFromContext 从请求的 context 中安全地提取 claims
-func GetClaimsFromContext(ctx context.Context) (*Claims, bool) {
-	claims, ok := ctx.Value(key).(*Claims)
-	return claims, ok
 }
