@@ -1,41 +1,33 @@
-# 配置文件：configs/config.yaml
-# 说明：这是API网关的配置文件，包含网关端口、数据库连接信息、服务列表及其负载均衡策略、JWT配置等。
-gateway:
-  port: ":8080"
-
-database:
-  host: "172.30.48.1"
-  port: 3306
-  user: "root"
-  password: "123456"
-  dbname: "go_gateway"
+# file: configs/config.yaml
+server:
+  port: ":8080" # 网关的端口
 
 services:
+  - name: "auth-service"
+    url: "http://localhost:8083"
+    healthCheckPath: "/healthz" # 假设认证服务也有健康检查
   - name: "service-a"
-    path: "/service-a/"
-    # 负载均衡策略，可选 'round-robin' 或 'least-connections'
-    # 如果不填，默认为 'round-robin'
-    load_balancing_strategy: "round-robin" 
-    endpoints:
-      - url: "http://localhost:8081"
-        # 健康检查配置
-        health_check:
-          path: "/health"      # 健康检查路径
-          interval: "10s"      # 检查间隔
-      - url: "http://localhost:8083" # Service A 的新实例
-        health_check:
-          path: "/health"
-          interval: "10s"
-
+    url: "http://localhost:8081"
+    healthCheckPath: "/healthz" # 假设 service-a 的健康检查端点
   - name: "service-b"
-    path: "/service-b/"
-    load_balancing_strategy: "round-robin"
-    endpoints:
-      - url: "http://localhost:8082"
-        health_check:
-          path: "/health"
-          interval: "10s"
+    url: "http://localhost:8082"
+    healthCheckPath: "/healthz" # 假设 service-b 的健康检查端点
+
+routes:
+  # 访问 /auth 开头的路径，转发给 auth-service，并且不需要 JWT 验证
+  - path_prefix: "/auth"
+    service_name: "auth-service"
+    auth_required: false
+  # 访问 /service-a 开头的路径，转发给 service-a，并且必须进行 JWT 验证
+  - path_prefix: "/service-a"
+    service_name: "service-a"
+    auth_required: false
+  # 示例：你也可以添加 service-b 的路由
+  - path_prefix: "/service-b"
+    service_name: "service-b"
+    auth_required: true
 
 jwt:
-  secret_key: "your-very-secret-and-long-key-that-no-one-should-know" # 生产环境中应使用更复杂或随机生成的密钥
-  duration_minutes: 120 # Token 有效期，例如 120 分钟 (2小时)
+  # 这个密钥必须和认证服务里的完全一样
+  secret_key: "your-very-secret-key-that-is-long-enough"
+  duration_minutes: 60

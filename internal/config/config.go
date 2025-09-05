@@ -1,4 +1,4 @@
-// File: internal/config/config.go
+// file: internal/config/config.go
 package config
 
 import (
@@ -7,57 +7,40 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// h1--Config 对应整个 YAML 文件的顶层结构
+// Config 是整个应用的主配置结构体
 type Config struct {
-	// 字段名 Gateway 匹配 YAML 中的 'gateway:'
-	Gateway  GatewayConfig   `yaml:"gateway"`
+	Server   ServerConfig    `yaml:"server"`
 	Services []ServiceConfig `yaml:"services"`
+	Routes   []RouteConfig   `yaml:"routes"` // 新增 Routes
 	JWT      JWTConfig       `yaml:"jwt"`
-	Database DatabaseConfig  `yaml:"database"`
 }
 
-// h2--GatewayConfig 对应 YAML 中的 'gateway' 部分
-type GatewayConfig struct {
+// ServerConfig 对应 yaml 中的 "server" 部分
+type ServerConfig struct {
 	Port string `yaml:"port"`
 }
 
-// h2--ServiceConfig 对应 'services' 数组中的每一个服务对象
+// ServiceConfig 对应 yaml 中 "services" 列表里的每个服务
+// 结构已简化，只包含核心信息
 type ServiceConfig struct {
-	Name                  string `yaml:"name"`
-	Path                  string `yaml:"path"`
-	LoadBalancingStrategy string `yaml:"load_balancing_strategy"`
-	// Endpoints 字段匹配 YAML 中的 'endpoints:'
-	Endpoints []EndpointConfig `yaml:"endpoints"`
+	Name            string `yaml:"name"`
+	URL             string `yaml:"url"`             // 对应单个 URL
+	HealthCheckPath string `yaml:"healthCheckPath"` // 明确健康检查路径
 }
 
-// h3--EndpointConfig 对应 'endpoints' 数组中的每个后端实例对象
-type EndpointConfig struct {
-	URL         string            `yaml:"url"`
-	HealthCheck HealthCheckConfig `yaml:"health_check"`
+// RouteConfig 对应 yaml 中 "routes" 列表里的每个路由规则
+type RouteConfig struct {
+	PathPrefix   string `yaml:"path_prefix"`
+	ServiceName  string `yaml:"service_name"`
+	AuthRequired bool   `yaml:"auth_required"`
 }
 
-// h3--HealthCheckConfig 对应 'health_check' 对象
-type HealthCheckConfig struct {
-	Path     string `yaml:"path"`
-	Interval string `yaml:"interval"`
-}
-
-// h2--JWTConfig
 type JWTConfig struct {
 	SecretKey       string `yaml:"secret_key"`
 	DurationMinutes int    `yaml:"duration_minutes"`
 }
 
-// h2--DatabaseConfig 对应 YAML 中的 'database' 部分
-type DatabaseConfig struct {
-	Host     string `yaml:"host"`
-	Port     int    `yaml:"port"`
-	User     string `yaml:"user"`
-	Password string `yaml:"password"`
-	DBName   string `yaml:"dbname"`
-}
-
-// Load 函数从指定路径加载并解析 YAML 配置文件
+// Load 从指定路径加载配置文件
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -65,7 +48,8 @@ func Load(path string) (*Config, error) {
 	}
 
 	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	err = yaml.Unmarshal(data, &cfg)
+	if err != nil {
 		return nil, err
 	}
 

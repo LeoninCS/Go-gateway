@@ -1,12 +1,10 @@
-// File: internal/models/user.go
+// file: internal/models/user.go
 package models
 
-import "gorm.io/gorm"
-
-// User 定义了用户模型，对应数据库中的 users 表
+// 为了简单起见，我们先用一个简单的 User 结构体
+// 之后你可以添加 GORM 标签来映射数据库表
 type User struct {
-	gorm.Model          // 包含了 ID, CreatedAt, UpdatedAt, DeletedAt
-	Username     string `gorm:"unique;not null"`
-	Phone        string `gorm:"unique;not null"`
-	PasswordHash string `gorm:"not null"`
+	ID       string
+	Username string
+	Password string // 在真实项目中，这里应该是密码的哈希值
 }

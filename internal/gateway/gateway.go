@@ -1,3 +1,4 @@
+// file: internal/gateway/gateway.go
 package gateway
 
 import (
@@ -13,134 +14,108 @@ import (
 	"gateway.example/go-gateway/internal/loadbalancer"
 )
 
-// Gateway 是我们的核心网关处理器
 type Gateway struct {
-	Config        *config.Config        // 网关配置
-	Mux           *http.ServeMux        // HTTP 请求多路复用器
-	AuthHandler   *auth.AuthHandler     // 认证处理器
-	HealthHandler *health.HealthHandler // 健康检查处理器
+	Config        *config.Config
+	Mux           *http.ServeMux
+	HealthHandler *health.HealthHandler
 }
 
-// NewGateway 创建一个新的 Gateway 实例
-func NewGateway(cfg *config.Config, authHandler *auth.AuthHandler, healthHandler *health.HealthHandler) (*Gateway, error) {
+func NewGateway(cfg *config.Config, healthHandler *health.HealthHandler) (*Gateway, error) {
 	gw := &Gateway{
 		Config:        cfg,
 		Mux:           http.NewServeMux(),
-		AuthHandler:   authHandler,
-		HealthHandler: healthHandler, // 初始化 HealthHandler
+		HealthHandler: healthHandler,
 	}
 	gw.registerRoutes()
 	return gw, nil
 }
 
-// ServeHTTP 使 Gateway 实现了 http.Handler 接口
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	g.Mux.ServeHTTP(w, r)
 }
 
-// registerRoutes 初始化网关的所有路由规则
+func (g *Gateway) findServiceByName(name string) *config.ServiceConfig {
+	for i := range g.Config.Services {
+		if g.Config.Services[i].Name == name {
+			return &g.Config.Services[i]
+		}
+	}
+	return nil
+}
+
 func (g *Gateway) registerRoutes() {
-	// ===================================================================
-	// 1. 注册公共路由 (Public Routes)
-	// ===================================================================
-	g.Mux.HandleFunc("POST /register", g.AuthHandler.Register)
-	g.Mux.HandleFunc("POST /unregister", g.AuthHandler.Unregister)
-	g.Mux.HandleFunc("POST /login", g.AuthHandler.Login)
-	g.Mux.HandleFunc("POST /logout", g.AuthHandler.Logout)
-	g.Mux.HandleFunc("POST /send_verification_code", g.AuthHandler.SendVerificationCode)
-	g.Mux.HandleFunc("POST /reset_password", g.AuthHandler.ResetPassword)
-	g.Mux.HandleFunc("POST /change_password", g.AuthHandler.ChangePassword)
 	g.Mux.HandleFunc("GET /healthz", g.HealthHandler.Healthz)
 
-	// ===================================================================
-	// 2. 注册受保护的路由 (Protected Routes)
-	// ===================================================================
 	jwtMiddleware := auth.Middleware(&g.Config.JWT)
 
-	for i := range g.Config.Services {
-		serviceCfg := &g.Config.Services[i]
+	for i := range g.Config.Routes {
+		routeCfg := &g.Config.Routes[i]
 
-		var backends []*loadbalancer.Backend
-		for _, endpoint := range serviceCfg.Endpoints {
-			target, err := url.Parse(endpoint.URL)
-			if err != nil {
-				log.Printf("Error parsing target URL '%s' for service '%s': %v. Skipping.", endpoint.URL, serviceCfg.Name, err)
-				continue
-			}
-			proxy := httputil.NewSingleHostReverseProxy(target)
-			backends = append(backends, &loadbalancer.Backend{
-				URL:          target,
-				ReverseProxy: proxy,
-				Alive:        true,
-			})
-		}
-
-		if len(backends) == 0 {
-			log.Printf("No valid backends for service '%s'. Skipping.", serviceCfg.Name)
+		serviceCfg := g.findServiceByName(routeCfg.ServiceName)
+		if serviceCfg == nil {
+			log.Printf("Service '%s' for route '%s' not found. Skipping route.", routeCfg.ServiceName, routeCfg.PathPrefix)
 			continue
 		}
 
-		lb := loadbalancer.NewLoadBalancer(backends)
+		// **--- 这是核心修改点 ---**
+		// 2. 为找到的服务创建后端列表和负载均衡器
+		// 由于现在每个服务只有一个 URL，我们不再需要遍历 Endpoints
+		var backends []*loadbalancer.Backend
+		targetURL, err := url.Parse(serviceCfg.URL)
+		if err != nil {
+			log.Printf("Error parsing URL '%s' for service '%s': %v. Skipping route.", serviceCfg.URL, serviceCfg.Name, err)
+			continue
+		}
 
-		// 启动健康检查
+		proxy := httputil.NewSingleHostReverseProxy(targetURL)
+		backends = append(backends, &loadbalancer.Backend{
+			URL:          targetURL,
+			ReverseProxy: proxy,
+			Alive:        true,
+		})
+		// **--- 修改结束 ---**
+
+		lb := loadbalancer.NewLoadBalancer(backends)
 		go g.runHealthChecks(serviceCfg, backends)
 
-		// 创建受保护的handler
-		protectedHandler := jwtMiddleware(http.StripPrefix(serviceCfg.Path, lb))
+		var finalHandler http.Handler = http.StripPrefix(routeCfg.PathPrefix, lb)
 
-		// 注册路由，注意这里使用了方法+路径的模式匹配
-		g.Mux.Handle(serviceCfg.Path, protectedHandler)
+		if routeCfg.AuthRequired {
+			finalHandler = jwtMiddleware(finalHandler)
+			log.Printf("Applying JWT middleware to route: %s", routeCfg.PathPrefix)
+		}
 
-		log.Printf("Registered PROTECTED service '%s' at path '%s' with %d backends. Strategy: '%s'",
-			serviceCfg.Name, serviceCfg.Path, len(backends), serviceCfg.LoadBalancingStrategy)
+		g.Mux.Handle(routeCfg.PathPrefix+"/", finalHandler)
+
+		log.Printf("Registered route: Path '%s/*' -> Service '%s'. Auth Required: %v",
+			routeCfg.PathPrefix, routeCfg.ServiceName, routeCfg.AuthRequired)
 	}
 }
 
-// runHealthChecks 在后台为指定服务的所有后端运行健康检查
 func (g *Gateway) runHealthChecks(serviceCfg *config.ServiceConfig, backends []*loadbalancer.Backend) {
-	if len(serviceCfg.Endpoints) == 0 {
-		return
-	}
-
-	// 使用配置中的健康检查间隔，或者默认为30秒
-	intervalStr := serviceCfg.Endpoints[0].HealthCheck.Interval
-	interval, err := time.ParseDuration(intervalStr)
-	if err != nil {
-		log.Printf("[Health Check] Invalid interval '%s' for service '%s'. Defaulting to 30s. Error: %v",
-			intervalStr, serviceCfg.Name, err)
-		interval = 30 * time.Second
-	}
-
-	ticker := time.NewTicker(interval)
+	ticker := time.NewTicker(20 * time.Second)
 	defer ticker.Stop()
 
+	healthCheckURL := serviceCfg.URL + serviceCfg.HealthCheckPath
+
 	for range ticker.C {
-		for i, backend := range backends {
-			if i >= len(serviceCfg.Endpoints) {
-				continue
+		// 因为现在只有一个后端，所以我们直接检查它
+		backend := backends[0]
+
+		resp, err := http.Get(healthCheckURL)
+		if err != nil || resp.StatusCode != http.StatusOK {
+			if backend.IsAlive() {
+				log.Printf("Backend for service '%s' at '%s' is DOWN", serviceCfg.Name, serviceCfg.URL)
+				backend.SetAlive(false)
 			}
-
-			endpointCfg := serviceCfg.Endpoints[i]
-			healthCheckURL := *backend.URL
-			healthCheckURL.Path = endpointCfg.HealthCheck.Path
-
-			client := http.Client{Timeout: 3 * time.Second}
-			resp, err := client.Get(healthCheckURL.String())
-
-			isAlive := err == nil && resp != nil && resp.StatusCode < 500
-			if resp != nil {
-				resp.Body.Close()
+		} else {
+			if !backend.IsAlive() {
+				log.Printf("Backend for service '%s' at '%s' is UP", serviceCfg.Name, serviceCfg.URL)
+				backend.SetAlive(true)
 			}
-
-			if isAlive != backend.IsAlive() {
-				backend.SetAlive(isAlive)
-				if isAlive {
-					log.Printf("[Health Check] Backend UP: %s for service '%s'", backend.URL, serviceCfg.Name)
-				} else {
-					log.Printf("[Health Check] Backend DOWN: %s for service '%s' (URL: %s, Error: %v)",
-						backend.URL, serviceCfg.Name, healthCheckURL.String(), err)
-				}
-			}
+		}
+		if resp != nil {
+			resp.Body.Close()
 		}
 	}
 }
