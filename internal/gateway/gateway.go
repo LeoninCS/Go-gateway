@@ -1,121 +1,211 @@
-// file: internal/gateway/gateway.go
 package gateway
 
 import (
+	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 	"time"
 
-	"gateway.example/go-gateway/internal/auth"
 	"gateway.example/go-gateway/internal/config"
 	"gateway.example/go-gateway/internal/health"
 	"gateway.example/go-gateway/internal/loadbalancer"
+	"gateway.example/go-gateway/internal/repository"
+	"gateway.example/go-gateway/internal/server"
+	authSvc "gateway.example/go-gateway/internal/service/auth"
+	"github.com/golang-jwt/jwt/v5"
 )
 
+// Gateway 网关结构体，实现 http.Handler 接口
 type Gateway struct {
-	Config        *config.Config
-	Mux           *http.ServeMux
-	HealthHandler *health.HealthHandler
+	config        *config.Config
+	lbFactory     *loadbalancer.LoadBalancerFactory
+	healthChecker *health.HealthChecker
+	authService   *authSvc.AuthService
 }
 
-func NewGateway(cfg *config.Config, healthHandler *health.HealthHandler) (*Gateway, error) {
-	gw := &Gateway{
-		Config:        cfg,
-		Mux:           http.NewServeMux(),
-		HealthHandler: healthHandler,
+// Server 封装 http.Server
+type Server struct {
+	httpServer *http.Server
+}
+
+// NewGateway 创建并初始化网关实例
+func NewGateway(cfg *config.Config) *Gateway {
+	// 初始化健康检查器
+	healthChecker := health.NewHealthChecker(30 * time.Second)
+	// 注册服务到健康检查器
+	for _, service := range cfg.Services {
+		instances := make([]string, 0)
+		for _, instance := range service.Instances {
+			instances = append(instances, instance.URL)
+		}
+		healthChecker.RegisterService(service.Name, instances, service.HealthCheckPath)
 	}
-	gw.registerRoutes()
-	return gw, nil
+	// 启动健康检查
+	go healthChecker.Start()
+
+	// 初始化负载均衡器工厂
+	lbFactory := loadbalancer.NewLoadBalancerFactory()
+	// 注册服务实例到负载均衡器
+	for _, service := range cfg.Services {
+		// 获取或创建负载均衡器
+		lb := lbFactory.GetOrCreateLoadBalancer(service.Name, service.LoadBalancer)
+		for _, inst := range service.Instances {
+			// 注册每个实例
+			lb.RegisterInstance(service.Name, &loadbalancer.ServiceInstance{
+				URL:    inst.URL,
+				Weight: inst.Weight,
+				Alive:  true, // 默认标记为存活
+			})
+		}
+	}
+
+	// 初始化认证服务
+	userRepo := repository.NewInMemoryUserRepository()
+	authService := authSvc.NewAuthService(userRepo, cfg.JWT.SecretKey, cfg.JWT.DurationMinutes)
+	return &Gateway{
+		config:        cfg,
+		lbFactory:     lbFactory,
+		healthChecker: healthChecker,
+		authService:   authService,
+	}
 }
 
+// isJWTValid 检查JWT token是否有效
+func (g *Gateway) isJWTValid(tokenString string) bool {
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return []byte(g.config.JWT.SecretKey), nil
+	})
+	if err != nil {
+		return false
+	}
+	return token.Valid
+}
+
+// ServeHTTP 实现 http.Handler 接口，处理所有请求
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	g.Mux.ServeHTTP(w, r)
+	// 处理健康检查端点
+	if r.URL.Path == "/healthz" {
+		g.HealthCheckHandler(w, r)
+		return
+	}
+	// 查找匹配的路由
+	var matchedRoute *config.RouteConfig
+	for _, route := range g.config.Routes {
+		if strings.HasPrefix(r.URL.Path, route.PathPrefix) {
+			matchedRoute = &route
+			break
+		}
+	}
+	if matchedRoute == nil {
+		http.Error(w, "Not Found", http.StatusNotFound)
+		return
+	}
+
+	// 检查是否需要认证
+	if matchedRoute.AuthRequired {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "Authorization header required", http.StatusUnauthorized)
+			return
+		}
+		// 提取Bearer token
+		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
+		if !g.isJWTValid(tokenString) {
+			http.Error(w, "Invalid token", http.StatusUnauthorized)
+			return
+		}
+	}
+	// 获取负载均衡器
+	lb := g.lbFactory.GetOrCreateLoadBalancer(
+		matchedRoute.ServiceName,
+		g.getServiceConfig(matchedRoute.ServiceName).LoadBalancer,
+	)
+
+	// **调试日志**
+	log.Printf("matchedRoute: %v", matchedRoute)
+	log.Printf("Instances for %s: %v", matchedRoute.ServiceName, lb.GetAllInstances(matchedRoute.ServiceName))
+
+	// 获取目标服务实例
+	instance, err := lb.GetNextInstance(matchedRoute.ServiceName)
+	if err != nil {
+		log.Printf("GetNextInstance error: %v", err)
+		http.Error(w, fmt.Sprintf("Service error: %v", err), http.StatusServiceUnavailable)
+		return
+	}
+
+	// 创建反向代理
+	target, err := url.Parse(instance.URL)
+	if err != nil {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	// 修改请求，去除路径前缀
+	//r.URL.Path = strings.TrimPrefix(r.URL.Path, matchedRoute.PathPrefix)
+	// 使用中间件跟踪请求连接数
+	if lbType, ok := lb.(interface{ ReleaseConnection(string, string) }); ok {
+		defer func() {
+			lbType.ReleaseConnection(matchedRoute.ServiceName, instance.URL)
+		}()
+	}
+	// 使用代理转发请求
+	proxy.ServeHTTP(w, r)
 }
 
-func (g *Gateway) findServiceByName(name string) *config.ServiceConfig {
-	for i := range g.Config.Services {
-		if g.Config.Services[i].Name == name {
-			return &g.Config.Services[i]
+// getServiceConfig 获取服务配置
+func (g *Gateway) getServiceConfig(serviceName string) *config.ServiceConfig {
+	for _, service := range g.config.Services {
+		if service.Name == serviceName {
+			return &service
 		}
 	}
 	return nil
 }
 
-func (g *Gateway) registerRoutes() {
-	g.Mux.HandleFunc("GET /healthz", g.HealthHandler.Healthz)
-
-	jwtMiddleware := auth.Middleware(&g.Config.JWT)
-
-	for i := range g.Config.Routes {
-		routeCfg := &g.Config.Routes[i]
-
-		serviceCfg := g.findServiceByName(routeCfg.ServiceName)
-		if serviceCfg == nil {
-			log.Printf("Service '%s' for route '%s' not found. Skipping route.", routeCfg.ServiceName, routeCfg.PathPrefix)
-			continue
+// HealthCheckHandler 处理健康检查请求
+func (g *Gateway) HealthCheckHandler(w http.ResponseWriter, r *http.Request) {
+	// 返回所有服务的健康状态
+	response := make(map[string]map[string]bool)
+	for serviceName, instances := range g.healthChecker.ServiceURLs {
+		response[serviceName] = make(map[string]bool)
+		for _, url := range instances {
+			response[serviceName][url] = g.healthChecker.IsInstanceHealthy(serviceName, url)
 		}
-
-		// **--- 这是核心修改点 ---**
-		// 2. 为找到的服务创建后端列表和负载均衡器
-		// 由于现在每个服务只有一个 URL，我们不再需要遍历 Endpoints
-		var backends []*loadbalancer.Backend
-		targetURL, err := url.Parse(serviceCfg.URL)
-		if err != nil {
-			log.Printf("Error parsing URL '%s' for service '%s': %v. Skipping route.", serviceCfg.URL, serviceCfg.Name, err)
-			continue
-		}
-
-		proxy := httputil.NewSingleHostReverseProxy(targetURL)
-		backends = append(backends, &loadbalancer.Backend{
-			URL:          targetURL,
-			ReverseProxy: proxy,
-			Alive:        true,
-		})
-		// **--- 修改结束 ---**
-
-		lb := loadbalancer.NewLoadBalancer(backends)
-		go g.runHealthChecks(serviceCfg, backends)
-
-		var finalHandler http.Handler = http.StripPrefix(routeCfg.PathPrefix, lb)
-
-		if routeCfg.AuthRequired {
-			finalHandler = jwtMiddleware(finalHandler)
-			log.Printf("Applying JWT middleware to route: %s", routeCfg.PathPrefix)
-		}
-
-		g.Mux.Handle(routeCfg.PathPrefix+"/", finalHandler)
-
-		log.Printf("Registered route: Path '%s/*' -> Service '%s'. Auth Required: %v",
-			routeCfg.PathPrefix, routeCfg.ServiceName, routeCfg.AuthRequired)
 	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
 }
 
-func (g *Gateway) runHealthChecks(serviceCfg *config.ServiceConfig, backends []*loadbalancer.Backend) {
-	ticker := time.NewTicker(20 * time.Second)
-	defer ticker.Stop()
-
-	healthCheckURL := serviceCfg.URL + serviceCfg.HealthCheckPath
-
-	for range ticker.C {
-		// 因为现在只有一个后端，所以我们直接检查它
-		backend := backends[0]
-
-		resp, err := http.Get(healthCheckURL)
-		if err != nil || resp.StatusCode != http.StatusOK {
-			if backend.IsAlive() {
-				log.Printf("Backend for service '%s' at '%s' is DOWN", serviceCfg.Name, serviceCfg.URL)
-				backend.SetAlive(false)
-			}
-		} else {
-			if !backend.IsAlive() {
-				log.Printf("Backend for service '%s' at '%s' is UP", serviceCfg.Name, serviceCfg.URL)
-				backend.SetAlive(true)
-			}
-		}
-		if resp != nil {
-			resp.Body.Close()
-		}
+func main() {
+	cfg, err := config.Load("configs/config.yaml")
+	if err != nil {
+		log.Fatalf("could not load config: %v", err)
 	}
+	gateway := NewGateway(cfg)
+
+	// 使用 NewServer 函数创建服务器实例
+	server, err := server.NewServer(cfg.Server.Port, gateway)
+	if err != nil {
+		log.Fatalf("failed to create server: %v", err)
+	}
+	log.Printf("Gateway starting on port %s", cfg.Server.Port)
+
+	// 启动服务器
+	go func() {
+		if err := server.Start(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("failed to start gateway: %v", err)
+		}
+	}()
+
+	// 等待优雅关闭信号
+	server.GracefulShutdown()
 }

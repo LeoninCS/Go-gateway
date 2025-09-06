@@ -6,17 +6,11 @@ import os
 import time
 from datetime import datetime
 import threading
+import yaml
 
 # 项目根目录
 PROJECT_ROOT = "/home/leon/GoCode/go-gateway"
-
-# 服务列表 (相对项目根目录的路径, 端口)
-services = [
-    ("./cmd/api-gateway", 8080),
-    ("./cmd/auth-service", 8083),
-    ("./cmd/service-a", 8081),
-    ("./cmd/service-b", 8082),
-]
+CONFIG_FILE = os.path.join(PROJECT_ROOT, "configs/config.yaml")
 
 processes = []  # 存储进程信息：(进程对象, 服务名, 端口)
 
@@ -45,7 +39,6 @@ def free_port(port):
                         os.kill(int(pid), signal.SIGKILL)
                         log(f"[WARN] 进程 PID={pid} 强制杀死")
     except subprocess.CalledProcessError:
-        # lsof 找不到进程时返回非 0，正常情况
         pass
     except Exception as e:
         log(f"[ERROR] 释放端口 {port} 失败：{str(e)}")
@@ -59,10 +52,9 @@ def stream_output(proc, service_name):
     proc.stdout.close()
 
 
-def start_service(rel_path, port):
+def start_service(service_name, rel_path, port):
     """启动单个服务，并捕获输出日志"""
     abs_path = os.path.abspath(os.path.join(PROJECT_ROOT, rel_path))
-    service_name = os.path.basename(rel_path)
 
     if not os.path.exists(abs_path):
         log(f"[ERROR] 服务目录不存在：{abs_path}")
@@ -73,17 +65,19 @@ def start_service(rel_path, port):
     log(f"[START] 启动服务 {service_name}（端口 {port}）：{rel_path}")
     proc = subprocess.Popen(
         ["go", "run", rel_path],
-        cwd=PROJECT_ROOT,        # 保持在项目根目录，保证配置路径正确
+        cwd=PROJECT_ROOT,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True
+        text=True,
+        # 👇 在这里注入 PORT 环境变量
+        env={**os.environ, "PORT": f":{port}"}
     )
 
-    # 启动线程实时打印日志
     threading.Thread(target=stream_output, args=(proc, service_name), daemon=True).start()
 
     processes.append((proc, service_name, port, rel_path))
     return proc
+
 
 
 def monitor_services():
@@ -120,14 +114,41 @@ def stop_services(sig, frame):
     sys.exit(0)
 
 
+def load_services_from_config():
+    """从 config.yaml 读取服务和端口，包括 api-gateway"""
+    with open(CONFIG_FILE, "r") as f:
+        config = yaml.safe_load(f)
+
+    service_defs = []
+
+    # 1️⃣ 读取网关服务
+    server_port = config.get("server", {}).get("port")
+    if server_port:
+        port = int(server_port.lstrip(":"))
+        rel_path = "./cmd/api-gateway"
+        service_defs.append(("api-gateway", rel_path, port))
+
+    # 2️⃣ 读取其他微服务
+    for service in config.get("services", []):
+        service_name = service["name"]
+        for instance in service.get("instances", []):
+            url = instance["url"]  # e.g. http://localhost:8085
+            port = int(url.split(":")[-1])
+            rel_path = f"./cmd/{service_name}"
+            service_defs.append((service_name, rel_path, port))
+
+    return service_defs
+
+
+
 if __name__ == "__main__":
-    # 注册信号处理
     signal.signal(signal.SIGINT, stop_services)
     signal.signal(signal.SIGTERM, stop_services)
 
-    # 启动所有服务
-    for rel_path, port in services:
-        start_service(rel_path, port)
+    services = load_services_from_config()
+
+    for service_name, rel_path, port in services:
+        start_service(service_name, rel_path, port)
 
     if not processes:
         log("[ERROR] 所有服务启动失败，脚本终止")

@@ -1,17 +1,31 @@
-# file: configs/config.yaml
 server:
   port: ":8080" # 网关的端口
 
 services:
   - name: "auth-service"
-    url: "http://localhost:8083"
-    healthCheckPath: "/healthz" # 假设认证服务也有健康检查
+    instances:
+      - url: "http://localhost:8085"
+        weight: 1
+      - url: "http://localhost:8086"
+        weight: 1
+    health_check_path: "/healthz" # 健康检查端点
+    load_balancer: "round_robin"  # 负载均衡策略: round_robin, weighted_round_robin, least_connections
   - name: "service-a"
-    url: "http://localhost:8081"
-    healthCheckPath: "/healthz" # 假设 service-a 的健康检查端点
+    instances:
+      - url: "http://localhost:8081"
+        weight: 1
+      - url: "http://localhost:8082"
+        weight: 1
+    health_check_path: "/healthz"
+    load_balancer: "weighted_round_robin"  # 使用加权轮询
   - name: "service-b"
-    url: "http://localhost:8082"
-    healthCheckPath: "/healthz" # 假设 service-b 的健康检查端点
+    instances:
+      - url: "http://localhost:8083"
+        weight: 1
+      - url: "http://localhost:8084"
+        weight: 1
+    health_check_path: "/healthz"
+    load_balancer: "least_connections"    # 使用最少连接数
 
 routes:
   # 访问 /auth 开头的路径，转发给 auth-service，并且不需要 JWT 验证

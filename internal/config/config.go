@@ -1,57 +1,64 @@
-// file: internal/config/config.go
+// internal/config/config.go
 package config
 
 import (
+	"fmt"
 	"os"
 
-	"gopkg.in/yaml.v3"
+	"gopkg.in/yaml.v2"
 )
 
-// Config 是整个应用的主配置结构体
+// Config 网关配置
 type Config struct {
 	Server   ServerConfig    `yaml:"server"`
 	Services []ServiceConfig `yaml:"services"`
-	Routes   []RouteConfig   `yaml:"routes"` // 新增 Routes
+	Routes   []RouteConfig   `yaml:"routes"`
 	JWT      JWTConfig       `yaml:"jwt"`
 }
 
-// ServerConfig 对应 yaml 中的 "server" 部分
+// ServerConfig 服务器配置
 type ServerConfig struct {
 	Port string `yaml:"port"`
 }
 
-// ServiceConfig 对应 yaml 中 "services" 列表里的每个服务
-// 结构已简化，只包含核心信息
+// ServiceConfig 服务配置
 type ServiceConfig struct {
-	Name            string `yaml:"name"`
-	URL             string `yaml:"url"`             // 对应单个 URL
-	HealthCheckPath string `yaml:"healthCheckPath"` // 明确健康检查路径
+	Name            string           `yaml:"name"`
+	Instances       []InstanceConfig `yaml:"instances"`
+	HealthCheckPath string           `yaml:"health_check_path"`
+	LoadBalancer    string           `yaml:"load_balancer"` // 负载均衡策略
 }
 
-// RouteConfig 对应 yaml 中 "routes" 列表里的每个路由规则
+// InstanceConfig 实例配置
+type InstanceConfig struct {
+	URL    string `yaml:"url"`
+	Weight int    `yaml:"weight"`
+}
+
+// RouteConfig 路由配置
 type RouteConfig struct {
 	PathPrefix   string `yaml:"path_prefix"`
 	ServiceName  string `yaml:"service_name"`
 	AuthRequired bool   `yaml:"auth_required"`
 }
 
+// JWTConfig JWT配置
 type JWTConfig struct {
 	SecretKey       string `yaml:"secret_key"`
 	DurationMinutes int    `yaml:"duration_minutes"`
 }
 
-// Load 从指定路径加载配置文件
+// Load 加载配置文件
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	var cfg Config
-	err = yaml.Unmarshal(data, &cfg)
-	if err != nil {
-		return nil, err
+	var config Config
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
-	return &cfg, nil
+	return &config, nil
 }

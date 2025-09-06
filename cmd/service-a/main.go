@@ -1,41 +1,67 @@
-// 这是一个简单的HTTP服务示例，展示了如何为健康检查创建专用的处理器。
 package main
 
 import (
-	"flag"
+	"context"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 )
 
-// mainHandler 处理服务的主要请求
 func mainHandler(w http.ResponseWriter, r *http.Request) {
-	log.Printf("Service A received request for: %s", r.URL.Path)
-	fmt.Fprintf(w, "Hello from Service A at path: %s\n", r.URL.Path)
+	port := getPort()
+	log.Printf("Service A (%s) received request for: %s", port, r.URL.Path)
+	fmt.Fprintf(w, "Hello from Service A at port %s, path: %s\n", port, r.URL.Path)
 }
 
-// healthHandler 处理健康检查请求
 func healthHandler(w http.ResponseWriter, r *http.Request) {
-	// 不记录健康检查以保持主日志干净，
-	// 除非你在调试。
-	// log.Println("Service A health check received")
+	port := getPort()
+	log.Printf("Service A (%s) received request for: /healthz", port)
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintln(w, "OK")
 }
 
-func main() {
-	port := flag.String("port", ":8081", "Port for the service to listen on")
-	flag.Parse()
-
-	// 为根路径注册主处理器
-	http.HandleFunc("/", mainHandler)
-
-	// --- 这是关键的补充 ---
-	// 为 /health 路径注册专用处理器
-	http.HandleFunc("/health", healthHandler)
-
-	log.Printf("Starting Service A on %s", *port)
-	if err := http.ListenAndServe(*port, nil); err != nil {
-		log.Fatalf("Could not start Service A: %v", err)
+func getPort() string {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = ":8081"
 	}
+	return port
+}
+
+func main() {
+	port := getPort()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", mainHandler)
+	mux.HandleFunc("/healthz", healthHandler)
+
+	server := &http.Server{
+		Addr:         port,
+		Handler:      mux,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
+	}
+
+	go func() {
+		log.Printf("Starting Service A on %s", port)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Could not start Service A: %v", err)
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	log.Println("Service A is shutting down...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		log.Printf("Server shutdown error: %v", err)
+	}
+	log.Println("Service A stopped")
 }

@@ -330,3 +330,5 @@ main() {
 
 # 脚本入口
 main "$@"
+
+# ./code_stats.sh .

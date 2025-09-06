@@ -1,52 +1,67 @@
-// File: internal/loadbalancer/loadbalancer.go
+// internal/loadbalancer/loadbalancer.go
 package loadbalancer
 
 import (
-	"net/http"
-	"sync/atomic"
+	"sync"
 )
 
-// LoadBalancer 是一个实现了 http.Handler 的负载均衡器
-type LoadBalancer struct {
-	backends []*Backend
-	next     uint32 // 用于轮询的原子计数器
+// ServiceInstance 表示一个服务实例
+type ServiceInstance struct {
+	URL         string
+	Weight      int
+	Alive       bool
+	Connections int // 用于最少连接数算法
 }
 
-// NewLoadBalancer 创建一个新的负载均衡器实例
-func NewLoadBalancer(backends []*Backend) *LoadBalancer {
-	return &LoadBalancer{
-		backends: backends,
+// LoadBalancer 负载均衡器接口
+type LoadBalancer interface {
+	GetNextInstance(serviceName string) (*ServiceInstance, error)
+	RegisterInstance(serviceName string, instance *ServiceInstance)
+	GetAllInstances(serviceName string) []*ServiceInstance
+}
+
+// LoadBalancerFactory 负载均衡器工厂
+type LoadBalancerFactory struct {
+	balancers map[string]LoadBalancer
+	mutex     sync.RWMutex
+}
+
+func NewLoadBalancerFactory() *LoadBalancerFactory {
+	return &LoadBalancerFactory{
+		balancers: make(map[string]LoadBalancer),
 	}
 }
 
-// getNextAvailablePeer 使用轮询策略选择一个健康的后端
-func (lb *LoadBalancer) getNextAvailablePeer() *Backend {
-	// 遍历所有后端 len(lb.backends) 次，以确保我们检查了每一个
-	// 这是一个健壮的循环，即使有多个后端同时宕机也能找到一个可用的
-	numBackends := uint32(len(lb.backends))
-	for i := uint32(0); i < numBackends; i++ {
-		// 原子地增加计数器并取模，得到下一个要检查的索引
-		nextIdx := atomic.AddUint32(&lb.next, 1) % numBackends
-
-		// 检查该后端的健康状况
-		if lb.backends[nextIdx].IsAlive() {
-			// 如果健康，就返回它
-			return lb.backends[nextIdx]
-		}
+// GetOrCreateLoadBalancer 获取或创建负载均衡器
+func (f *LoadBalancerFactory) GetOrCreateLoadBalancer(serviceName, algorithm string) LoadBalancer {
+	f.mutex.RLock()
+	if lb, exists := f.balancers[serviceName]; exists {
+		f.mutex.RUnlock()
+		return lb
 	}
-	// 如果循环结束都没有找到健康的后端
-	return nil
-}
+	f.mutex.RUnlock()
 
-// ServeHTTP 是处理请求的入口，它实现了 http.Handler 接口
-func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	peer := lb.getNextAvailablePeer()
-	if peer != nil {
-		// 找到了一个健康的后端，将请求转发给它
-		peer.ReverseProxy.ServeHTTP(w, r)
-		return
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+
+	// 再次检查，防止其他协程已经创建了
+	if lb, exists := f.balancers[serviceName]; exists {
+		return lb
 	}
 
-	// 所有后端都不可用，返回 503 Service Unavailable 错误
-	http.Error(w, "Service not available", http.StatusServiceUnavailable)
+	// 创建新的负载均衡器
+	var lb LoadBalancer
+	switch algorithm {
+	case "round_robin":
+		lb = NewRoundRobinBalancer(serviceName)
+	case "weighted_round_robin":
+		lb = NewWeightedRoundRobinBalancer(serviceName)
+	case "least_connections":
+		lb = NewLeastConnectionsBalancer(serviceName)
+	default:
+		lb = NewRoundRobinBalancer(serviceName)
+	}
+
+	f.balancers[serviceName] = lb
+	return lb
 }

@@ -6,7 +6,6 @@ import (
 
 	"gateway.example/go-gateway/internal/config"
 	"gateway.example/go-gateway/internal/gateway"
-	"gateway.example/go-gateway/internal/health"
 	"gateway.example/go-gateway/internal/server"
 )
 
@@ -23,11 +22,8 @@ func main() {
 	// --- 2. 依赖注入：创建处理器和网关 ---
 	log.Println("Initializing application layers...")
 
-	// a. 创建 Handler
-	healthHandler := health.NewHealthHandler()
-
 	// b. 创建网关层
-	gw, err := gateway.NewGateway(cfg, healthHandler)
+	gw := gateway.NewGateway(cfg)
 	if err != nil {
 		log.Fatalf("Fatal error: failed to create gateway: %v", err)
 	}
