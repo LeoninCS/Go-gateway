@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"gateway.example/go-gateway/internal/config"
+	authHandler "gateway.example/go-gateway/internal/handler/auth"
 	"gateway.example/go-gateway/internal/repository"
 	authSvc "gateway.example/go-gateway/internal/service/auth"
 )
@@ -18,7 +19,7 @@ func main() {
 
 	userRepo := repository.NewInMemoryUserRepository()
 	authService := authSvc.NewAuthService(userRepo, cfg.JWT.SecretKey, cfg.JWT.DurationMinutes)
-	authHandler := authSvc.NewAuthHandler(authService)
+	authHandler := authHandler.NewAuthHandler(authService)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {

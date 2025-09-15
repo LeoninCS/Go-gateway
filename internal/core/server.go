@@ -1,5 +1,4 @@
-// File: internal/server/server.go (修改后版本)
-package server
+package core
 
 import (
 	"context"
@@ -14,6 +13,10 @@ import (
 // Server 封装了 http.Server
 type Server struct {
 	httpServer *http.Server
+}
+
+func (s *Server) Shutdown(ctx context.Context) any {
+	panic("unimplemented")
 }
 
 func NewServer(port string, handler http.Handler) (*Server, error) {

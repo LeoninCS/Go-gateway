@@ -1,16 +1,17 @@
-// file: internal/service/auth/handler.go
 package auth
 
 import (
 	"encoding/json"
 	"net/http"
+
+	"gateway.example/go-gateway/internal/service/auth"
 )
 
 type AuthHandler struct {
-	authService *AuthService
+	authService *auth.AuthService
 }
 
-func NewAuthHandler(service *AuthService) *AuthHandler {
+func NewAuthHandler(service *auth.AuthService) *AuthHandler {
 	return &AuthHandler{authService: service}
 }
 

@@ -1,5 +1,30 @@
 server:
-  port: ":8080" # 网关的端口
+  port: ":8080"
+
+# 1. 中心化定义所有可用的限流规则
+#    这里是规则的 "蓝图" 或 "模板"
+rate_limiting:
+  rules:
+    # 规则1: 这是从您旧配置的 "default_token_bucket" 转换而来的
+    - name: "default-ip-limit"
+      type: "memory_token_bucket" # 指定使用的限流算法
+      tokenBucket:
+        capacity: 100   # 桶容量
+        refillRate: 50  # 每秒填充速率 (tokens/sec)
+
+    # 规则2: 这是为 /auth 路径定制的更严格的规则
+    - name: "auth-service-limit"
+      type: "memory_token_bucket"
+      tokenBucket:
+        capacity: 50
+        refillRate: 20
+
+    # 规则3: 这是为 /service-a 定制的、基于路径的宽松规则
+    - name: "service-a-path-limit"
+      type: "memory_token_bucket"
+      tokenBucket:
+        capacity: 200
+        refillRate: 100
 
 services:
   - name: "auth-service"
@@ -8,8 +33,8 @@ services:
         weight: 1
       - url: "http://localhost:8086"
         weight: 1
-    health_check_path: "/healthz" # 健康检查端点
-    load_balancer: "round_robin"  # 负载均衡策略: round_robin, weighted_round_robin, least_connections
+    health_check_path: "/healthz"
+    load_balancer: "round_robin"
   - name: "service-a"
     instances:
       - url: "http://localhost:8081"
@@ -17,7 +42,7 @@ services:
       - url: "http://localhost:8082"
         weight: 1
     health_check_path: "/healthz"
-    load_balancer: "weighted_round_robin"  # 使用加权轮询
+    load_balancer: "weighted_round_robin"
   - name: "service-b"
     instances:
       - url: "http://localhost:8083"
@@ -25,23 +50,34 @@ services:
       - url: "http://localhost:8084"
         weight: 1
     health_check_path: "/healthz"
-    load_balancer: "least_connections"    # 使用最少连接数
+    load_balancer: "least_connections"
 
+# 2. 在每个路由中，通过插件按名称 "引用" 规则
 routes:
-  # 访问 /auth 开头的路径，转发给 auth-service，并且不需要 JWT 验证
   - path_prefix: "/auth"
     service_name: "auth-service"
     auth_required: false
-  # 访问 /service-a 开头的路径，转发给 service-a，并且必须进行 JWT 验证
+    plugins:
+      - name: "rateLimit"                # 插件名称，必须与代码中的常量匹配
+        rule: "auth-service-limit"      # 引用上面定义的规则名称
+        strategy: "ip"                  # 指定应用此规则的策略（按IP）
+
   - path_prefix: "/service-a"
     service_name: "service-a"
     auth_required: false
-  # 示例：你也可以添加 service-b 的路由
+    plugins:
+      - name: "rateLimit"
+        rule: "service-a-path-limit"    # 引用上面定义的规则名称
+        strategy: "path"                # 指定应用此规则的策略（按Path）
+
   - path_prefix: "/service-b"
     service_name: "service-b"
     auth_required: true
+    plugins:
+      - name: "rateLimit"
+        rule: "default-ip-limit"        # 此路由应用默认的IP限流规则
+        strategy: "ip"
 
 jwt:
-  # 这个密钥必须和认证服务里的完全一样
   secret_key: "your-very-secret-key-that-is-long-enough"
   duration_minutes: 60
