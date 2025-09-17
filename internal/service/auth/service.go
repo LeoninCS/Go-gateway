@@ -7,7 +7,6 @@ import (
 
 	"gateway.example/go-gateway/internal/models"
 	"gateway.example/go-gateway/internal/repository" // 同样，替换成你的模块名
-
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -17,12 +16,29 @@ type AuthService struct {
 	jwtDuration time.Duration
 }
 
-func NewAuthService(userRepo repository.UserRepository, secret string, durationMinutes int) *AuthService {
-	return &AuthService{
-		userRepo:    userRepo,
-		jwtSecret:   []byte(secret),
-		jwtDuration: time.Duration(durationMinutes) * time.Minute,
+func NewAuthService(
+	userRepo repository.UserRepository,
+	jwtSecretKey string,
+	jwtDurationMinutes int,
+) (*AuthService, error) {
+	// 1. 输入校验 (增加健壮性)
+	if userRepo == nil {
+		return nil, errors.New("auth service: user repository cannot be nil")
 	}
+	if jwtSecretKey == "" {
+		return nil, errors.New("auth service: jwt secret key cannot be empty")
+	}
+	if jwtDurationMinutes <= 0 {
+		return nil, errors.New("auth service: jwt duration must be a positive number")
+	}
+	// 2. 创建实例
+	service := &AuthService{
+		userRepo:    userRepo,
+		jwtSecret:   []byte(jwtSecretKey),
+		jwtDuration: time.Duration(jwtDurationMinutes) * time.Minute,
+	}
+	// 3. 返回正确的 (pointer, nil) 对
+	return service, nil
 }
 
 // Login 验证用户凭证并返回一个JWT

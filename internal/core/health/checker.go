@@ -1,126 +1,178 @@
 package health
 
 import (
-	"fmt"
+	"log" // 推荐使用 log 模块以获得带时间戳的输出
 	"net/http"
 	"sync"
 	"time"
 )
 
+// HealthChecker 负责监控所有上游服务实例的健康状况。
 type HealthChecker struct {
-	Client      *http.Client               //
-	Checks      map[string]map[string]bool // 服务名称 -> 实例URL -> 健康状态
-	CheckMutex  sync.RWMutex               //
-	StopChan    chan struct{}              // 停止信号通道
-	Interval    time.Duration              // 检查间隔
-	ServiceURLs map[string][]string        // 服务对应的实例URL列表
+	client      *http.Client
+	services    sync.Map // 使用 sync.Map 替代 map + RWMutex，更适合"写少读多"的场景
+	stopChan    chan struct{}
+	checkTicker *time.Ticker
 }
 
-func NewHealthChecker(interval time.Duration) *HealthChecker {
+// ServiceCheckInfo 存储单个服务的所有健康检查相关信息。
+type ServiceCheckInfo struct {
+	Instances   []string
+	HealthPath  string
+	Status      map[string]bool // Instance URL -> isHealthy
+	statusMutex sync.RWMutex
+}
+
+// NewHealthChecker 创建一个新的 HealthChecker 实例。
+// ★ 修正 1: 构造函数应接收全局配置，以便获取超时设置。
+func NewHealthChecker(timeout time.Duration, interval time.Duration) *HealthChecker {
 	return &HealthChecker{
-		Client: &http.Client{
-			Timeout: 5 * time.Second,
+		client: &http.Client{
+			Timeout: timeout,
 		},
-		Checks:      make(map[string]map[string]bool),
-		StopChan:    make(chan struct{}),
-		Interval:    interval,
-		ServiceURLs: make(map[string][]string),
+		stopChan:    make(chan struct{}),
+		checkTicker: time.NewTicker(interval),
 	}
 }
 
-// RegisterService 注册服务及其实例
+// RegisterService 注册一个服务及其所有实例以进行健康检查。
+// ★ 函数名和逻辑保持，但内部实现使用 sync.Map。
 func (h *HealthChecker) RegisterService(serviceName string, instances []string, healthPath string) {
-	h.CheckMutex.Lock()
-	defer h.CheckMutex.Unlock()
-
-	h.ServiceURLs[serviceName] = instances
-
-	// 初始化状态检查
-	if _, exists := h.Checks[serviceName]; !exists {
-		h.Checks[serviceName] = make(map[string]bool)
+	statusMap := make(map[string]bool)
+	for _, instURL := range instances {
+		statusMap[instURL] = true // 初始状态默认为健康
 	}
 
-	for _, url := range instances {
-		if _, exists := h.Checks[serviceName][url]; !exists {
-			h.Checks[serviceName][url] = true // 默认健康，同步修改引用
-		}
+	serviceInfo := &ServiceCheckInfo{
+		Instances:  instances,
+		HealthPath: healthPath,
+		Status:     statusMap,
 	}
+	h.services.Store(serviceName, serviceInfo)
 }
 
-// Start 开始健康检查
+// Start 在一个独立的 goroutine 中启动周期性健康检查。
+// ★ 修正 2: 移除 for 循环。启动逻辑应由外部调用者决定是否放入 goroutine。
+//
+//	我们将在 Gateway 中使用 `go h.Start()` 来调用它。
 func (h *HealthChecker) Start() {
-	ticker := time.NewTicker(h.Interval)
-
+	log.Println("[HealthChecker] 开始周期性健康检查...")
 	for {
 		select {
-		case <-ticker.C:
-			h.runHealthChecks()
-		case <-h.StopChan:
-			ticker.Stop()
+		case <-h.checkTicker.C:
+			h.runAllHealthChecks()
+		case <-h.stopChan:
+			h.checkTicker.Stop()
+			log.Println("[HealthChecker] 已停止。")
 			return
 		}
 	}
 }
 
-// Stop 停止健康检查（原方法名补充完整语义）
-func (h *HealthChecker) Stop() {
-	close(h.StopChan)
+// Shutdown 优雅地停止健康检查器。
+// ★ 修正 3: 函数名从 Stop 改为 Shutdown 以符合 Gateway 中的调用，语义更清晰。
+func (h *HealthChecker) Shutdown() {
+	close(h.stopChan)
 }
 
-// runHealthChecks 执行健康检查
-func (h *HealthChecker) runHealthChecks() {
-	// 遍历服务对应的实例列表，同步修改引用
-	for serviceName, instances := range h.ServiceURLs {
-		for _, url := range instances {
-			healthy := h.checkInstanceHealth(url)
-			h.updateInstanceStatus(serviceName, url, healthy)
+// runAllHealthChecks 遍历所有已注册的服务并并发执行检查。
+func (h *HealthChecker) runAllHealthChecks() {
+	var wg sync.WaitGroup
+	h.services.Range(func(key, value interface{}) bool {
+		serviceName := key.(string)
+		serviceInfo := value.(*ServiceCheckInfo)
+
+		wg.Add(1)
+		go func(name string, info *ServiceCheckInfo) {
+			defer wg.Done()
+			h.checkService(name, info)
+		}(serviceName, serviceInfo)
+
+		return true // 继续遍历
+	})
+	wg.Wait()
+}
+
+// checkService 检查单个服务的所有实例。
+func (h *HealthChecker) checkService(serviceName string, info *ServiceCheckInfo) {
+	for _, instURL := range info.Instances {
+		// ★ 修正 4: 使用注册时提供的 healthPath，而不是硬编码。
+		checkURL := instURL + info.HealthPath
+		resp, err := h.client.Get(checkURL)
+
+		isHealthy := err == nil && resp.StatusCode == http.StatusOK
+		if err == nil {
+			resp.Body.Close()
 		}
+
+		h.updateInstanceStatus(serviceName, info, instURL, isHealthy)
 	}
 }
 
-// checkInstanceHealth 检查单个实例的健康状态
-func (h *HealthChecker) checkInstanceHealth(url string) bool {
-	// 这里简化检查，实际应该更健壮
-	resp, err := h.Client.Get(url + "/healthz")
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
+func (h *HealthChecker) updateInstanceStatus(serviceName string, info *ServiceCheckInfo, url string, isHealthy bool) {
+	info.statusMutex.Lock()
+	defer info.statusMutex.Unlock()
 
-	return resp.StatusCode == http.StatusOK
-}
-
-// updateInstanceStatus 更新实例健康状态
-func (h *HealthChecker) updateInstanceStatus(serviceName, url string, healthy bool) {
-	h.CheckMutex.Lock()
-	defer h.CheckMutex.Unlock()
-
-	// 检查服务是否已注册，同步修改引用
-	if _, exists := h.Checks[serviceName]; !exists {
-		h.Checks[serviceName] = make(map[string]bool)
-	}
-
-	wasHealthy := h.Checks[serviceName][url]
-	h.Checks[serviceName][url] = healthy
-
-	// 记录健康状态变化
-	if wasHealthy != healthy {
-		status := "healthy"
-		if !healthy {
-			status = "unhealthy"
+	wasHealthy, exists := info.Status[url]
+	if !exists || wasHealthy != isHealthy {
+		statusStr := "健康"
+		if !isHealthy {
+			statusStr = "不健康"
 		}
-		fmt.Printf("[%s] Instance %s is now %s\n", time.Now().Format("2006-01-02 15:04:05"), url, status)
+		log.Printf("[HealthChecker] 状态变更 -> 服务: %s, 实例: %s, 当前状态: %s", serviceName, url, statusStr)
+		info.Status[url] = isHealthy
 	}
 }
 
-// IsInstanceHealthy 检查实例是否健康
+// IsInstanceHealthy 检查特定实例的当前健康状态。
 func (h *HealthChecker) IsInstanceHealthy(serviceName, url string) bool {
-	h.CheckMutex.RLock()
-	defer h.CheckMutex.RUnlock()
-
-	// 检查服务和实例是否存在，同步修改引用
-	if status, exists := h.Checks[serviceName][url]; exists {
-		return status
+	val, ok := h.services.Load(serviceName)
+	if !ok {
+		return false // 服务未注册
 	}
-	return false
+	info := val.(*ServiceCheckInfo)
+
+	info.statusMutex.RLock()
+	defer info.statusMutex.RUnlock()
+
+	isHealthy, exists := info.Status[url]
+	return exists && isHealthy
+}
+
+// GetAllStatuses 返回所有服务的健康状态，用于 /healthz 端点。
+func (h *HealthChecker) GetAllStatuses() map[string]map[string]bool {
+	statuses := make(map[string]map[string]bool)
+	h.services.Range(func(key, value interface{}) bool {
+		serviceName := key.(string)
+		info := value.(*ServiceCheckInfo)
+
+		info.statusMutex.RLock()
+		defer info.statusMutex.RUnlock()
+
+		instanceStatuses := make(map[string]bool)
+		for url, isHealthy := range info.Status {
+			instanceStatuses[url] = isHealthy
+		}
+		statuses[serviceName] = instanceStatuses
+		return true
+	})
+	return statuses
+}
+
+// GetServiceStatus 返回单个服务的健康状态
+func (h *HealthChecker) GetServiceStatus(serviceName string) map[string]bool {
+	val, ok := h.services.Load(serviceName)
+	if !ok {
+		return nil // 服务未注册
+	}
+	info := val.(*ServiceCheckInfo)
+
+	info.statusMutex.RLock()
+	defer info.statusMutex.RUnlock()
+
+	statuses := make(map[string]bool)
+	for url, isHealthy := range info.Status {
+		statuses[url] = isHealthy
+	}
+	return statuses
 }

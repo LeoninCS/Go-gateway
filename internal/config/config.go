@@ -1,28 +1,28 @@
-// internal/config/config.go
+// package config 定义了网关YAML配置的结构体和加载逻辑。
 package config
 
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"gopkg.in/yaml.v2"
 )
 
-// Config 是整个网关的配置根结构
-type Config struct {
-	Server       ServerConfig       `yaml:"server"`
-	Services     []ServiceConfig    `yaml:"services"`
-	Routes       []RouteConfig      `yaml:"routes"`
-	JWT          JWTConfig          `yaml:"jwt"`
-	RateLimiting RateLimitingConfig `yaml:"rate_limiting"` // 修改点：引用新的限流配置结构
+// Config 是整个网关配置的根结构
+
+type GatewayConfig struct {
+	Server       ServerConfig             `yaml:"server"`
+	HealthCheck  HealthCheckConfig        `yaml:"health_check"`
+	Services     map[string]ServiceConfig `yaml:"services"`
+	Routes       []*RouteConfig           `yaml:"routes"`
+	RateLimiting RateLimitingConfig       `yaml:"rate_limiting"`
+	JWT          JWTConfig                `yaml:"jwt"`
+	AuthService  AuthServiceConfig        `yaml:"auth_service"`
 }
 
-// ServerConfig 服务器配置
-type ServerConfig struct {
-	Port string `yaml:"port"`
-}
+// ServiceConfig 定义了一个可被路由的上游服务
 
-// ServiceConfig 后端服务配置
 type ServiceConfig struct {
 	Name            string           `yaml:"name"`
 	Instances       []InstanceConfig `yaml:"instances"`
@@ -30,61 +30,87 @@ type ServiceConfig struct {
 	LoadBalancer    string           `yaml:"load_balancer"`
 }
 
-// InstanceConfig 服务实例配置
+// RouteConfig 定义了一条路由规则
+
+type RouteConfig struct {
+	PathPrefix       string       `yaml:"path_prefix,omitempty"`
+	Path             string       `yaml:"path,omitempty"`
+	ServiceName      string       `yaml:"service_name"`
+	Plugins          []PluginSpec `yaml:"plugins,omitempty"`
+	Methods          []string     `yaml:"methods,omitempty"`
+	RequiresAuth     bool         `yaml:"requires_auth,omitempty"`
+	HealthCheckScope string       `yaml:"health_check_scope,omitempty"`
+}
+
+// ServerConfig 定义服务器配置
+
+type ServerConfig struct {
+	Port string `yaml:"port"`
+}
+
+// HealthCheckConfig 定义健康检查配置
+
+type HealthCheckConfig struct {
+	Interval time.Duration `yaml:"interval"`
+	Timeout  time.Duration `yaml:"timeout"`
+}
+
+// InstanceConfig 定义服务实例配置
+
 type InstanceConfig struct {
 	URL    string `yaml:"url"`
 	Weight int    `yaml:"weight"`
 }
 
-// RouteConfig 路由配置
-type RouteConfig struct {
-	PathPrefix   string       `yaml:"path_prefix"`
-	ServiceName  string       `yaml:"service_name"`
-	AuthRequired bool         `yaml:"auth_required"`
-	Plugins      []PluginSpec `yaml:"plugins"` // 修改点：使用通用的插件配置
-}
+// PluginSpec 定义插件配置
 
-// PluginSpec 是插件的通用配置结构
-// UnmarshalYAML 会被自动调用，将 YAML map 转换为此类型
 type PluginSpec map[string]interface{}
 
-// JWTConfig JWT配置
+// RateLimitingConfig 定义限流配置
+
+type RateLimitingConfig struct {
+	Rules []RateLimiterRule `yaml:"rules"`
+}
+
+// RateLimiterRule 定义限流规则
+
+type RateLimiterRule struct {
+	Name        string              `yaml:"name"`
+	Type        string              `yaml:"type"`
+	TokenBucket TokenBucketSettings `yaml:"tokenBucket,omitempty"`
+}
+
+// TokenBucketSettings 定义令牌桶设置
+
+type TokenBucketSettings struct {
+	Capacity   int `yaml:"capacity"`
+	RefillRate int `yaml:"refillRate"`
+}
+
+// JWTConfig 定义JWT配置
+
 type JWTConfig struct {
 	SecretKey       string `yaml:"secret_key"`
 	DurationMinutes int    `yaml:"duration_minutes"`
 }
 
-// --- 以下是为新的限流架构重新设计的配置结构 ---
+// AuthServiceConfig 定义认证服务配置
 
-// RateLimitingConfig 是限流功能的总配置
-type RateLimitingConfig struct {
-	Rules []RateLimiterRule `yaml:"rules"` // 定义一个规则列表
+type AuthServiceConfig struct {
+	ValidateURL string `yaml:"validate_url"`
 }
 
-// RateLimiterRule 定义了单条可被引用的限流规则
-type RateLimiterRule struct {
-	Name        string              `yaml:"name"`        // 规则的唯一名称, 例如 "default-ip-limit"
-	Type        string              `yaml:"type"`        // 限流器类型, 例如 "memory_token_bucket"
-	TokenBucket TokenBucketSettings `yaml:"tokenBucket"` // 令牌桶算法的特定配置
-}
+// Load 从指定路径加载配置文件
 
-// TokenBucketSettings 定义了令牌桶的参数
-type TokenBucketSettings struct {
-	Capacity   int `yaml:"capacity"`   // 桶容量
-	RefillRate int `yaml:"refillRate"` // 每秒填充速率
-}
-
-// --- 加载函数保持不变 ---
-
-func Load(path string) (*Config, error) {
+func Load(path string) (*GatewayConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read config file: %w", err)
+		return nil, fmt.Errorf("读取配置文件 '%s' 失败: %w", path, err)
 	}
 
-	var config Config
+	var config GatewayConfig
 	if err := yaml.Unmarshal(data, &config); err != nil {
-		return nil, fmt.Errorf("failed to parse config file: %w", err)
+		return nil, fmt.Errorf("解析配置文件 '%s' 失败: %w", path, err)
 	}
 
 	return &config, nil

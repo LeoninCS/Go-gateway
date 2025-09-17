@@ -3,6 +3,7 @@ package auth
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"gateway.example/go-gateway/internal/service/auth"
 )
@@ -35,4 +36,32 @@ func (h *AuthHandler) LoginHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"token": token})
+}
+
+func (h *AuthHandler) ValidateHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	authHeader := r.Header.Get("Authorization")
+	if authHeader == "" {
+		http.Error(w, "Authorization header required", http.StatusUnauthorized)
+		return
+	}
+
+	// 提取Bearer token
+	parts := strings.Split(authHeader, " ")
+	if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
+		http.Error(w, "Invalid Authorization header format", http.StatusUnauthorized)
+		return
+	}
+
+	tokenString := parts[1]
+	if h.authService.ValidateToken(tokenString) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("valid"))
+	} else {
+		http.Error(w, "Invalid token", http.StatusUnauthorized)
+	}
 }

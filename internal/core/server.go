@@ -37,18 +37,24 @@ func (s *Server) Start() error {
 
 // GracefulShutdown 优雅关闭服务器
 func (s *Server) GracefulShutdown() {
-	// 创建一个通道接收系统信号
 	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+	// 监听 SIGINT (Ctrl+C) 和 SIGTERM (kill 命令)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	// 阻塞直到接收到信号
 	<-quit
-	log.Println("Shutting down server...")
-	// 设置超时时间
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	log.Println("收到停止信号，服务器正在优雅地关闭...")
+
+	// 赋予服务器一些时间来完成正在处理的请求
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // 30秒的关闭超时
 	defer cancel()
-	// 优雅关闭
+
 	if err := s.httpServer.Shutdown(ctx); err != nil {
-		log.Printf("Server forced to shutdown: %v", err)
-		return
+		log.Fatalf("致命错误: 服务器强制关闭: %v", err)
 	}
-	log.Println("Server exited properly")
+
+	// 关闭网关持有的其他资源 (负载均衡器、限流器等)
+	if err := s.httpServer.Close(); err != nil { // 调用 Gateway 的 Close 方法
+		log.Fatalf("致命错误: 关闭网关资源失败: %v", err)
+	}
+	log.Println("服务器已优雅关闭。")
 }

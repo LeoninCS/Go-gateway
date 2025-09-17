@@ -5,7 +5,7 @@ import (
 	"log"
 	"net/http"
 
-	"gateway.example/go-gateway/internal/core/ratelimit"
+	"gateway.example/go-gateway/internal/core/limiter"
 	// 使用别名 svcr (service-rate-limit) 避免与 core.ratelimit 包名冲突
 	svcr "gateway.example/go-gateway/internal/service/ratelimit"
 )
@@ -13,7 +13,7 @@ import (
 // RateLimit 是创建限流中间件的工厂函数。
 func NewRateLimiter(
 	svc svcr.Service,
-	identifierFunc ratelimit.IdentifierFunc,
+	identifierFunc limiter.IdentifierFunc,
 	ruleName string,
 ) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {

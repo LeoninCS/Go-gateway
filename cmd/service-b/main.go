@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -27,7 +28,11 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 func getPort() string {
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = ":8083"
+		port = "8083"
+	}
+	// 确保端口格式正确
+	if !strings.Contains(port, ":") {
+		port = ":" + port
 	}
 	return port
 }

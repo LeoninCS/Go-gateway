@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"gateway.example/go-gateway/internal/config"
 	authHandler "gateway.example/go-gateway/internal/handler/auth"
@@ -18,7 +19,10 @@ func main() {
 	}
 
 	userRepo := repository.NewInMemoryUserRepository()
-	authService := authSvc.NewAuthService(userRepo, cfg.JWT.SecretKey, cfg.JWT.DurationMinutes)
+	authService, err := authSvc.NewAuthService(userRepo, cfg.JWT.SecretKey, cfg.JWT.DurationMinutes)
+	if err != nil {
+		log.Fatalf("could not create auth service: %v", err)
+	}
 	authHandler := authHandler.NewAuthHandler(authService)
 
 	mux := http.NewServeMux()
@@ -33,11 +37,18 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
+	mux.HandleFunc("/validate", func(w http.ResponseWriter, r *http.Request) {
+		authHandler.ValidateHandler(w, r)
+	})
 
 	// 从环境变量 PORT 获取端口，默认为 8085
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = ":8085"
+		port = "8085"
+	}
+	// 确保端口格式正确
+	if !strings.Contains(port, ":") {
+		port = ":" + port
 	}
 	log.Printf("Auth service starting on port %s", port)
 

@@ -1,41 +1,57 @@
+################################################################################
+#                                                                              #
+#                      API Gateway Configuration File                          #
+#                                                                              #
+# 描述:                                                                        #
+#   此文件定义了网关的所有行为，包括监听端口、后端服务、路由规则以及应用的插件策略。   #
+#   配置被分为几个逻辑部分，以便于理解和维护。                                    #
+#                                                                              #
+################################################################################
+
+
+# ==============================================================================
+# SECTION 1: GATEWAY GLOBAL SETTINGS (网关全局设置)
+# ------------------------------------------------------------------------------
+# 这些是网关自身的基础配置，独立于任何特定的路由或服务。
+# ==============================================================================
+
 server:
+  # 网关服务监听的地址和端口。
   port: ":8080"
 
-# 1. 中心化定义所有可用的限流规则
-#    这里是规则的 "蓝图" 或 "模板"
-rate_limiting:
-  rules:
-    # 规则1: 这是从您旧配置的 "default_token_bucket" 转换而来的
-    - name: "default-ip-limit"
-      type: "memory_token_bucket" # 指定使用的限流算法
-      tokenBucket:
-        capacity: 100   # 桶容量
-        refillRate: 50  # 每秒填充速率 (tokens/sec)
+health_check:
+  # 网关对所有后端服务进行健康检查的全局策略。
+  #
+  # 健康检查的频率。网关将每隔 15 秒对所有服务实例进行一次检查。
+  interval: "15s"
+  # 每次健康检查请求的超时时间。如果 5 秒内未收到响应，则认为检查失败。
+  timeout: "5s"
 
-    # 规则2: 这是为 /auth 路径定制的更严格的规则
-    - name: "auth-service-limit"
-      type: "memory_token_bucket"
-      tokenBucket:
-        capacity: 50
-        refillRate: 20
 
-    # 规则3: 这是为 /service-a 定制的、基于路径的宽松规则
-    - name: "service-a-path-limit"
-      type: "memory_token_bucket"
-      tokenBucket:
-        capacity: 200
-        refillRate: 100
+# ==============================================================================
+# SECTION 2: BACKEND SERVICES CATALOG (后端服务目录)
+# ------------------------------------------------------------------------------
+# ★ 核心修正:
+#   根据 Go 代码中的 `map[string]*ServiceConfig` 定义，此部分已从列表（sequence）
+#   修改为映射（map）。每个服务的唯一名称现在是 map 的键，这使得在网关内部
+#   可以进行更高效的服务查找。
+# ==============================================================================
 
 services:
-  - name: "auth-service"
+  # ------ Service Entry: auth-service ------
+  auth-service: # <-- 这是 map 的键，取代了之前的 "- name: ..."
+    name: "auth-service" # 服务的唯一标识符，将其保留在结构内可增强自包含性。
     instances:
       - url: "http://localhost:8085"
         weight: 1
       - url: "http://localhost:8086"
         weight: 1
-    health_check_path: "/healthz"
-    load_balancer: "round_robin"
-  - name: "service-a"
+    health_check_path: "/healthz"         # 此服务的健康检查端点。
+    load_balancer: "round_robin"          # 用于此服务的负载均衡策略。
+
+  # ------ Service Entry: service-a ------
+  service-a: # <-- 这是 map 的键
+    name: "service-a"
     instances:
       - url: "http://localhost:8081"
         weight: 1
@@ -43,7 +59,10 @@ services:
         weight: 1
     health_check_path: "/healthz"
     load_balancer: "weighted_round_robin"
-  - name: "service-b"
+
+  # ------ Service Entry: service-b ------
+  service-b: # <-- 这是 map 的键
+    name: "service-b"
     instances:
       - url: "http://localhost:8083"
         weight: 1
@@ -52,32 +71,107 @@ services:
     health_check_path: "/healthz"
     load_balancer: "least_connections"
 
-# 2. 在每个路由中，通过插件按名称 "引用" 规则
-routes:
-  - path_prefix: "/auth"
-    service_name: "auth-service"
-    auth_required: false
-    plugins:
-      - name: "rateLimit"                # 插件名称，必须与代码中的常量匹配
-        rule: "auth-service-limit"      # 引用上面定义的规则名称
-        strategy: "ip"                  # 指定应用此规则的策略（按IP）
 
-  - path_prefix: "/service-a"
-    service_name: "service-a"
-    auth_required: false
-    plugins:
-      - name: "rateLimit"
-        rule: "service-a-path-limit"    # 引用上面定义的规则名称
-        strategy: "path"                # 指定应用此规则的策略（按Path）
+# ==============================================================================
+# SECTION 3: REUSABLE POLICIES & PLUGINS CONFIG (可复用策略与插件配置)
+# ------------------------------------------------------------------------------
+# 此部分定义了各种插件（如限流、认证）所需的可复用配置。
+# 这样做可以避免在每个路由中重复定义相同的策略。
+# ==============================================================================
 
-  - path_prefix: "/service-b"
-    service_name: "service-b"
-    auth_required: true
-    plugins:
-      - name: "rateLimit"
-        rule: "default-ip-limit"        # 此路由应用默认的IP限流规则
-        strategy: "ip"
+# --- Rate Limiting Rules Library (限流规则库) ---
+rate_limiting:
+  # 所有可用的限流规则都在这里定义。路由将通过名称来引用这些规则。
+  rules:
+    # 规则 1: 默认的 IP 限流规则
+    - name: "default-ip-limit"
+      type: "memory_token_bucket" # 限流算法
+      tokenBucket:
+        capacity: 100   # 桶容量
+        refillRate: 50  # 每秒填充速率 (tokens/sec)
 
+    # 规则 2: 针对认证服务的更严格规则
+    - name: "auth-service-limit"
+      type: "memory_token_bucket"
+      tokenBucket:
+        capacity: 50
+        refillRate: 20
+
+    # 规则 3: 针对服务A的宽松规则
+    - name: "service-a-path-limit"
+      type: "memory_token_bucket"
+      tokenBucket:
+        capacity: 200
+        refillRate: 100
+
+# --- Authentication Service Configuration (认证服务配置) ---
 jwt:
+  # JWT 相关的配置，例如用于生成或验证签名的密钥。
   secret_key: "your-very-secret-key-that-is-long-enough"
   duration_minutes: 60
+
+auth_service:
+  # 当使用外部认证服务插件时，这里提供其验证端点的 URL。
+  # 我们的 'auth' 插件会向此 URL 发送 token 进行验证。
+  validate_url: "http://auth-service/validate"
+
+
+# ==============================================================================
+# SECTION 4: ROUTING RULES (路由规则 - 核心逻辑)
+# ------------------------------------------------------------------------------
+# 这是网关的核心。它定义了如何将传入的 HTTP 请求映射到后端服务，
+# 并在此过程中应用哪些插件（中间件）。
+# ==============================================================================
+
+routes:
+  # ------ New Route: Health Check Endpoint ------
+  - path_prefix: "/healthz"      # 使用前缀匹配而不是精确匹配
+    # 根据端口决定检测范围：8080端口检测全部服务，其他端口单独检测
+    service_name: "all-services"  # 特殊值，表示检测全部服务
+    health_check_scope: "auto"     # auto 模式会根据端口自动选择检测范围
+    # 健康检查通常不需要任何插件（认证、限流等）
+    plugins: []
+    # 明确指定方法，通常健康检查只需要 GET
+    methods: 
+      - "GET"
+    # 是否需要token认证
+    requires_auth: false
+  
+  # ------ Route 1: Requests to /auth/* ------
+  - path_prefix: "/auth"
+    service_name: "auth-service"
+    plugins:
+      # 为认证接口应用专用的限流规则
+      - name: "ratelimit"            # ★ 变更点: 统一插件命名为 snake_case 风格
+        rule: "auth-service-limit"
+        strategy: "ip"
+    # 是否需要token认证 - 认证服务自身通常不需要token
+    requires_auth: false
+
+  # ------ Route 2: Requests to /service-a/* ------
+  - path_prefix: "/service-a"
+    service_name: "service-a"
+    plugins:
+      - name: "ratelimit"
+        rule: "service-a-path-limit"
+        strategy: "path"
+    # 是否需要token认证
+    requires_auth: false
+
+  # ------ Route 3: Requests to /service-b/* (Secured Route) ------
+  - path_prefix: "/service-b"
+    service_name: "service-b"
+    plugins:
+      - name: "auth"
+      - name: "ratelimit"
+        rule: "default-ip-limit"
+        strategy: "ip"
+    # 需要token认证
+    requires_auth: true
+
+  # 为其他需要认证的路由也设置 requires_auth: true
+  - path_prefix: "/secure"
+    service_name: "service-a"
+    plugins:
+      - name: "auth"
+    requires_auth: true
