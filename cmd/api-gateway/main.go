@@ -19,22 +19,19 @@ func main() {
 	}
 	log.Println("配置加载成功。")
 
-	// --- 4. 依赖注入：创建网关实例 ---
+	// --- 2. 依赖注入：创建网关实例 ---
 	log.Println("初始化网关层...")
-
 	gw, err := core.NewGateway(cfg)
 	if err != nil {
 		log.Fatalf("创建网关失败: %v", err)
 	}
 	log.Println("网关层初始化成功。")
 
-	// --- 5. 创建并启动 HTTP 服务器 ---
-	// 使用现有的 server.NewServer，将 gw (它实现了 http.Handler) 传入
+	// --- 3. 创建并启动 HTTP 服务器 ---
 	srv, err := core.NewServer(cfg.Server.Port, gw)
 	if err != nil {
 		log.Fatalf("致命错误: 创建服务器失败: %v", err)
 	}
-
 	log.Printf("HTTP 服务器正在端口 %s 上启动...", cfg.Server.Port)
 
 	// 在一个 Goroutine 中启动服务器，以便主 Goroutine 可以监听信号
@@ -44,7 +41,7 @@ func main() {
 		}
 	}()
 
-	// --- 6. 平滑关机处理 ---
+	// --- 4. 平滑关机处理 ---
 	// 创建一个通道来接收停止信号
 	srv.GracefulShutdown()
 }
