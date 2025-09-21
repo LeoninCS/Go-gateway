@@ -12,13 +12,14 @@ import (
 // Config 是整个网关配置的根结构
 
 type GatewayConfig struct {
-	Server       ServerConfig             `yaml:"server"`
-	HealthCheck  HealthCheckConfig        `yaml:"health_check"`
-	Services     map[string]ServiceConfig `yaml:"services"`
-	Routes       []*RouteConfig           `yaml:"routes"`
-	RateLimiting RateLimitingConfig       `yaml:"rate_limiting"`
-	JWT          JWTConfig                `yaml:"jwt"`
-	AuthService  AuthServiceConfig        `yaml:"auth_service"`
+	Server         ServerConfig             `yaml:"server"`
+	HealthCheck    HealthCheckConfig        `yaml:"health_check"`
+	Services       map[string]ServiceConfig `yaml:"services"`
+	Routes         []*RouteConfig           `yaml:"routes"`
+	RateLimiting   RateLimitingConfig       `yaml:"rate_limiting"`
+	JWT            JWTConfig                `yaml:"jwt"`
+	AuthService    AuthServiceConfig        `yaml:"auth_service"`
+	CircuitBreaker CircuitBreakerConfig     `yaml:"circuit_breaker"`
 }
 
 // ServiceConfig 定义了一个可被路由的上游服务
@@ -98,6 +99,14 @@ type JWTConfig struct {
 
 type AuthServiceConfig struct {
 	ValidateURL string `yaml:"validate_url"`
+}
+
+// CircuitBreakerConfig 定义断路器配置
+
+type CircuitBreakerConfig struct {
+	FailureThreshold int           `yaml:"failure_threshold"`
+	SuccessThreshold int           `yaml:"success_threshold"`
+	ResetTimeout     time.Duration `yaml:"reset_timeout"`
 }
 
 // Load 从指定路径加载配置文件

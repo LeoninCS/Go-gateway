@@ -6,22 +6,32 @@ import (
 	"time"
 
 	"gateway.example/go-gateway/internal/models"
-	"gateway.example/go-gateway/internal/repository" // 同样，替换成你的模块名
+	"gateway.example/go-gateway/internal/repository"
 	"github.com/golang-jwt/jwt/v5"
 )
 
-type AuthService struct {
+// AuthService 定义认证服务的接口
+type AuthService interface {
+	Login(username, password string) (string, error)
+	ValidateToken(tokenString string) bool
+	ValidateTokenWithClaims(tokenString string) (*jwt.RegisteredClaims, error)
+	GenerateToken(user *models.User) (string, error)
+}
+
+// authService 是AuthService接口的具体实现
+type authService struct {
 	userRepo    repository.UserRepository
 	jwtSecret   []byte
 	jwtDuration time.Duration
 }
 
+// NewAuthService 创建一个新的认证服务实例
 func NewAuthService(
 	userRepo repository.UserRepository,
 	jwtSecretKey string,
 	jwtDurationMinutes int,
-) (*AuthService, error) {
-	// 1. 输入校验 (增加健壮性)
+) (AuthService, error) {
+	// 输入校验
 	if userRepo == nil {
 		return nil, errors.New("auth service: user repository cannot be nil")
 	}
@@ -31,49 +41,55 @@ func NewAuthService(
 	if jwtDurationMinutes <= 0 {
 		return nil, errors.New("auth service: jwt duration must be a positive number")
 	}
-	// 2. 创建实例
-	service := &AuthService{
+
+	// 创建实例
+	service := &authService{
 		userRepo:    userRepo,
 		jwtSecret:   []byte(jwtSecretKey),
 		jwtDuration: time.Duration(jwtDurationMinutes) * time.Minute,
 	}
-	// 3. 返回正确的 (pointer, nil) 对
+
 	return service, nil
 }
 
 // Login 验证用户凭证并返回一个JWT
-func (s *AuthService) Login(username, password string) (string, error) {
+func (s *authService) Login(username, password string) (string, error) {
 	user, err := s.userRepo.FindByUsername(username)
 	if err != nil {
 		return "", errors.New("invalid username or password")
 	}
 
-	if user.Password != password { // 在真实项目中，这里应该用 bcrypt.CompareHashAndPassword
+	// 注意：在真实项目中，这里应该用 bcrypt.CompareHashAndPassword 来比较哈希后的密码
+	if user.Password != password {
 		return "", errors.New("invalid username or password")
 	}
+
 	token, err := s.GenerateToken(user)
 	if err != nil {
 		return "", err
 	}
+
 	return token, nil
 }
 
-func (s *AuthService) ValidateToken(tokenString string) bool {
+// ValidateToken 验证JWT令牌的有效性
+func (s *authService) ValidateToken(tokenString string) bool {
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
-		return s.jwtSecret, nil // 使用 AuthService 实例持有的 secretKey
+		return s.jwtSecret, nil
 	})
+
 	if err != nil {
-		// 可以选择在这里记录错误，以便调试
-		// log.Printf("JWT token validation failed: %v", err)
 		return false
 	}
+
 	return token.Valid
 }
 
-func (s *AuthService) ValidateTokenWithClaims(tokenString string) (*jwt.RegisteredClaims, error) {
+// ValidateTokenWithClaims 验证JWT令牌并返回其声明
+func (s *authService) ValidateTokenWithClaims(tokenString string) (*jwt.RegisteredClaims, error) {
 	claims := &jwt.RegisteredClaims{}
 	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
@@ -81,20 +97,23 @@ func (s *AuthService) ValidateTokenWithClaims(tokenString string) (*jwt.Register
 		}
 		return s.jwtSecret, nil
 	})
+
 	if err != nil {
 		if errors.Is(err, jwt.ErrTokenExpired) {
 			return nil, errors.New("token expired")
 		}
 		return nil, fmt.Errorf("invalid token: %w", err)
 	}
+
 	if !token.Valid {
 		return nil, errors.New("token is not valid")
 	}
+
 	return claims, nil
 }
 
-// GenerateToken 生成 JWT token (示例)
-func (s *AuthService) GenerateToken(user *models.User) (string, error) {
+// GenerateToken 为用户生成JWT令牌
+func (s *authService) GenerateToken(user *models.User) (string, error) {
 	claims := &jwt.RegisteredClaims{
 		Issuer:    "auth-service",
 		Subject:   user.ID,

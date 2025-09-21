@@ -12,19 +12,22 @@ import (
 	"gateway.example/go-gateway/internal/core/loadbalancer"
 	"gateway.example/go-gateway/internal/plugin"
 	pl_auth "gateway.example/go-gateway/internal/plugin/auth"
+	pl_circuitbreaker "gateway.example/go-gateway/internal/plugin/circuitbreaker"
 	pl_ratelimit "gateway.example/go-gateway/internal/plugin/ratelimit"
+	svc_circuitbreaker "gateway.example/go-gateway/internal/service/circuitbreaker"
 	svc_ratelimit "gateway.example/go-gateway/internal/service/ratelimit"
 )
 
 // Gateway API网关核心引擎
 // 负责请求路由、负载均衡、健康检查和插件管理
 type Gateway struct {
-	config        *config.GatewayConfig // 网关配置
-	router        *Router               // 路由匹配器
-	proxy         *Proxy                // 反向代理
-	healthChecker *health.HealthChecker // 健康检查器
-	pluginManager *plugin.Manager       // 插件管理器
-	rateLimitSvc  svc_ratelimit.Service // 限流服务
+	config            *config.GatewayConfig      // 网关配置
+	router            *Router                    // 路由匹配器
+	proxy             *Proxy                     // 反向代理
+	healthChecker     *health.HealthChecker      // 健康检查器
+	pluginManager     *plugin.Manager            // 插件管理器
+	rateLimitSvc      svc_ratelimit.Service      // 限流服务
+	circuitBreakerSvc svc_circuitbreaker.Service // 熔断器服务
 }
 
 // NewGateway 创建网关实例并初始化所有组件
@@ -37,6 +40,22 @@ func NewGateway(cfg *config.GatewayConfig) (*Gateway, error) {
 	// 健康检查器
 	healthChecker := health.NewHealthChecker(cfg.HealthCheck.Timeout, cfg.HealthCheck.Interval)
 	log.Println("核心组件: 健康检查器已创建。")
+
+	// 限流服务
+	rateLimitSvc, err := svc_ratelimit.NewService(cfg.RateLimiting)
+	if err != nil {
+		return nil, fmt.Errorf("初始化限流服务失败: %w", err)
+	}
+	log.Println("服务层: 限流服务已成功初始化。")
+
+	// 断路器
+	// 熔断器服务初始化
+	circuitBreakerSvc := svc_circuitbreaker.NewService(
+		cfg.CircuitBreaker.FailureThreshold,
+		cfg.CircuitBreaker.SuccessThreshold,
+		cfg.CircuitBreaker.ResetTimeout,
+	)
+	log.Println("服务层: 熔断器服务已成功初始化。")
 
 	// 注册服务实例到健康检查器和负载均衡器
 	for _, serviceCfg := range cfg.Services {
@@ -62,19 +81,13 @@ func NewGateway(cfg *config.GatewayConfig) (*Gateway, error) {
 	go healthChecker.Start()
 
 	// 创建反向代理
-	proxy := NewProxy(lbFactory, healthChecker)
+	proxy := NewProxy(lbFactory, healthChecker, circuitBreakerSvc)
 	log.Println("核心组件: 反向代理已创建并注入依赖。")
 
 	// 插件初始化
 	pluginManager := plugin.NewManager()
 
 	// 限流插件
-	rateLimitSvc, err := svc_ratelimit.NewService(cfg.RateLimiting)
-	if err != nil {
-		return nil, fmt.Errorf("初始化限流服务失败: %w", err)
-	}
-	log.Println("服务层: 限流服务已成功初始化。")
-
 	rateLimitPlugin := pl_ratelimit.NewPlugin(rateLimitSvc)
 	pluginManager.Register(rateLimitPlugin)
 	log.Println("插件: 'rateLimit' 已成功注册。")
@@ -89,14 +102,20 @@ func NewGateway(cfg *config.GatewayConfig) (*Gateway, error) {
 		log.Println("插件: 'auth' 已成功注册。")
 	}
 
+	// 熔断器插件
+	circuitBreakerPlugin := pl_circuitbreaker.NewPlugin(circuitBreakerSvc)
+	pluginManager.Register(circuitBreakerPlugin)
+	log.Println("插件: 'circuitBreaker' 已成功注册。")
+
 	// 组装网关实例
 	gw := &Gateway{
-		config:        cfg,
-		router:        NewRouter(cfg.Routes),
-		proxy:         proxy,
-		healthChecker: healthChecker,
-		pluginManager: pluginManager,
-		rateLimitSvc:  rateLimitSvc,
+		config:            cfg,
+		router:            NewRouter(cfg.Routes),
+		proxy:             proxy,
+		healthChecker:     healthChecker,
+		pluginManager:     pluginManager,
+		rateLimitSvc:      rateLimitSvc,
+		circuitBreakerSvc: circuitBreakerSvc,
 	}
 
 	log.Println("网关核心已成功初始化并准备就绪。")
@@ -193,12 +212,22 @@ func (g *Gateway) HealthCheckHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // Shutdown 优雅关闭网关
-// 停止健康检查和限流服务
+// 停止健康检查和所有服务
 func (g *Gateway) Shutdown() {
 	log.Println("网关正在关闭...")
+
+	// 停止健康检查
 	g.healthChecker.Shutdown()
+
+	// 关闭限流服务
 	if err := g.rateLimitSvc.Close(); err != nil {
 		log.Printf("关闭限流服务时出错: %v", err)
 	}
+
+	// 关闭熔断器服务
+	if err := g.circuitBreakerSvc.Close(); err != nil {
+		log.Printf("关闭熔断器服务时出错: %v", err)
+	}
+
 	log.Println("网关已成功关闭。")
 }

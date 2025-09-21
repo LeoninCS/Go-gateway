@@ -12,19 +12,27 @@ import (
 	"gateway.example/go-gateway/internal/config"
 	"gateway.example/go-gateway/internal/core/health"
 	"gateway.example/go-gateway/internal/core/loadbalancer"
+	"gateway.example/go-gateway/internal/service/circuitbreaker"
 )
 
 // Proxy 负责将请求转发到后端服务。
 type Proxy struct {
-	lbFactory     *loadbalancer.LoadBalancerFactory
-	healthChecker *health.HealthChecker
+	lbFactory         *loadbalancer.LoadBalancerFactory
+	healthChecker     *health.HealthChecker
+	circuitBreakerSvc circuitbreaker.Service // 添加熔断器服务依赖
+}
+
+type responseWriterWrapper struct {
+	http.ResponseWriter
+	statusCode int
 }
 
 // NewProxy 创建一个新的 Proxy 实例。
-func NewProxy(lbFactory *loadbalancer.LoadBalancerFactory, hc *health.HealthChecker) *Proxy {
+func NewProxy(lbFactory *loadbalancer.LoadBalancerFactory, hc *health.HealthChecker, cbSvc circuitbreaker.Service) *Proxy {
 	return &Proxy{
-		lbFactory:     lbFactory,
-		healthChecker: hc,
+		lbFactory:         lbFactory,
+		healthChecker:     hc,
+		circuitBreakerSvc: cbSvc,
 	}
 }
 
@@ -83,8 +91,24 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 		// 可以在此处添加更多基于路由或服务配置的头操作
 	}
 
-	// 5. 执行代理
-	proxy.ServeHTTP(w, r)
+	// 5. 使用 responseWriterWrapper 捕获响应状态码
+	wrapper := &responseWriterWrapper{
+		ResponseWriter: w,
+		statusCode:     0,
+	}
+
+	// 6. 执行代理
+	proxy.ServeHTTP(wrapper, r)
+
+	// 7. 根据响应状态码更新熔断器状态
+	// 判断请求是否成功（2xx 状态码视为成功，其他视为失败）
+	statusCode := wrapper.GetStatusCode()
+	success := statusCode >= 200 && statusCode < 300
+
+	if p.circuitBreakerSvc != nil {
+		log.Printf("[Proxy] 服务 '%s' 请求完成，状态码: %d, 成功: %v", service.Name, statusCode, success)
+		p.circuitBreakerSvc.RecordResult(service.Name, success)
+	}
 }
 
 // getHealthyInstance 封装了“获取下一个健康实例”的逻辑 (代码无误，无需修改)
@@ -110,4 +134,16 @@ func (p *Proxy) getHealthyInstance(lb loadbalancer.LoadBalancer, serviceName str
 	}
 
 	return nil, fmt.Errorf("在所有实例中未找到健康的实例")
+}
+
+func (w *responseWriterWrapper) WriteHeader(statusCode int) {
+	w.statusCode = statusCode
+	w.ResponseWriter.WriteHeader(statusCode)
+}
+func (w *responseWriterWrapper) GetStatusCode() int {
+	if w.statusCode == 0 {
+		// 如果没有显式设置状态码，默认认为是 200 OK
+		return http.StatusOK
+	}
+	return w.statusCode
 }

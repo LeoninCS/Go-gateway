@@ -27,9 +27,23 @@ health_check:
   # 每次健康检查请求的超时时间。如果 5 秒内未收到响应，则认为检查失败。
   timeout: "5s"
 
+  # ==============================================================================
+# SECTION 2: CIRCUIT BREAKER CONFIGURATION (熔断器配置)
+# ------------------------------------------------------------------------------
+# 熔断器全局配置，用于保护后端服务免受过载影响
+# ==============================================================================
+
+circuit_breaker:
+  # 失败阈值：连续失败多少次后触发熔断
+  failure_threshold: 5
+  # 成功阈值：半开状态下需要多少次成功才能恢复
+  success_threshold: 2
+  # 重置超时时间：熔断后等待多长时间进入半开状态
+  reset_timeout: "1m"
+
 
 # ==============================================================================
-# SECTION 2: BACKEND SERVICES CATALOG (后端服务目录)
+# SECTION 3: BACKEND SERVICES CATALOG (后端服务目录)
 # ------------------------------------------------------------------------------
 # ★ 核心修正:
 #   根据 Go 代码中的 `map[string]*ServiceConfig` 定义，此部分已从列表（sequence）
@@ -73,7 +87,7 @@ services:
 
 
 # ==============================================================================
-# SECTION 3: REUSABLE POLICIES & PLUGINS CONFIG (可复用策略与插件配置)
+# SECTION 4: REUSABLE POLICIES & PLUGINS CONFIG (可复用策略与插件配置)
 # ------------------------------------------------------------------------------
 # 此部分定义了各种插件（如限流、认证）所需的可复用配置。
 # 这样做可以避免在每个路由中重复定义相同的策略。
@@ -117,7 +131,7 @@ auth_service:
 
 
 # ==============================================================================
-# SECTION 4: ROUTING RULES (路由规则 - 核心逻辑)
+# SECTION 5: ROUTING RULES (路由规则 - 核心逻辑)
 # ------------------------------------------------------------------------------
 # 这是网关的核心。它定义了如何将传入的 HTTP 请求映射到后端服务，
 # 并在此过程中应用哪些插件（中间件）。
@@ -141,10 +155,12 @@ routes:
   - path_prefix: "/auth"
     service_name: "auth-service"
     plugins:
-      # 为认证接口应用专用的限流规则
       - name: "ratelimit"            # ★ 变更点: 统一插件命名为 snake_case 风格
         rule: "auth-service-limit"
         strategy: "ip"
+      # 为认证接口应用专用的限流规则
+      - name: "circuitbreaker"
+        service: "auth-service"
     # 是否需要token认证 - 认证服务自身通常不需要token
     requires_auth: false
 
@@ -155,6 +171,8 @@ routes:
       - name: "ratelimit"
         rule: "service-a-path-limit"
         strategy: "path"
+      - name: "circuitbreaker"
+        service: "service-a"
     # 是否需要token认证
     requires_auth: false
 
@@ -162,10 +180,12 @@ routes:
   - path_prefix: "/service-b"
     service_name: "service-b"
     plugins:
-      - name: "auth"
       - name: "ratelimit"
         rule: "default-ip-limit"
         strategy: "ip"
+      - name: "circuitbreaker"
+        service: "service-b"
+      - name: "auth"
     # 需要token认证
     requires_auth: true
 
@@ -173,5 +193,10 @@ routes:
   - path_prefix: "/secure"
     service_name: "service-a"
     plugins:
+      - name: "ratelimit"
+        rule: "default-ip-limit"
+        strategy: "ip"
+      - name: "circuitbreaker"
+        service: "service-a"
       - name: "auth"
     requires_auth: true
