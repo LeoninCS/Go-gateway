@@ -15,8 +15,18 @@ type Server struct {
 	httpServer *http.Server
 }
 
-func (s *Server) Shutdown(ctx context.Context) any {
-	panic("unimplemented")
+// Shutdown 接收context参数的优雅关闭方法
+func (s *Server) Shutdown(ctx context.Context) error {
+	log.Println("服务器正在关闭...")
+
+	// 调用底层http.Server的Shutdown方法
+	if err := s.httpServer.Shutdown(ctx); err != nil {
+		log.Printf("致命错误: 服务器强制关闭: %v", err)
+		return err
+	}
+
+	log.Println("服务器已优雅关闭。")
+	return nil
 }
 
 func NewServer(port string, handler http.Handler) (*Server, error) {

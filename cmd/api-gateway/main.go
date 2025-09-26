@@ -19,7 +19,10 @@ func main() {
 	}
 	log.Println("配置加载成功。")
 
-	// --- 2. 依赖注入：创建网关实例 ---
+	// --- 2. 日志配置 ---
+	log.Println("配置日志...")
+
+	// --- 3. 依赖注入：创建网关实例 ---
 	log.Println("初始化网关层...")
 	gw, err := core.NewGateway(cfg)
 	if err != nil {
@@ -27,7 +30,7 @@ func main() {
 	}
 	log.Println("网关层初始化成功。")
 
-	// --- 3. 创建并启动 HTTP 服务器 ---
+	// --- 4. 创建并启动 HTTP 服务器 ---
 	srv, err := core.NewServer(cfg.Server.Port, gw)
 	if err != nil {
 		log.Fatalf("致命错误: 创建服务器失败: %v", err)
@@ -41,7 +44,7 @@ func main() {
 		}
 	}()
 
-	// --- 4. 平滑关机处理 ---
+	// --- 5. 平滑关机处理 ---
 	// 创建一个通道来接收停止信号
 	srv.GracefulShutdown()
 }

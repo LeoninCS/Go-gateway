@@ -200,3 +200,4 @@ routes:
         service: "service-a"
       - name: "auth"
     requires_auth: true
+
