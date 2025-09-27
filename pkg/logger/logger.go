@@ -8,7 +8,38 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"gopkg.in/natefinch/lumberjack.v2"
+	"gopkg.in/yaml.v2"
 )
+
+// DefaultNew 使用默认配置创建并返回一个Logger实例
+func DefaultNew() (Logger, error) {
+	return NewWithConfigFile("configs/log.yaml")
+}
+
+// NewWithConfigFile 从YAML配置文件创建并返回一个Logger实例
+func NewWithConfigFile(configPath string) (Logger, error) {
+	// 读取YAML配置文件
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// 解析YAML到Options结构体
+	options := &Options{}
+	if err := yaml.Unmarshal(content, options); err != nil {
+		return nil, err
+	}
+
+	// 使用解析后的配置创建日志器
+	return new(WithOptions(*options))
+}
+
+// WithOptions 从完整的Options结构体创建Option
+func WithOptions(options Options) Option {
+	return func(o *Options) {
+		*o = options
+	}
+}
 
 // Logger 接口定义了完整的日志记录方法
 type Logger interface {
@@ -32,26 +63,9 @@ type zapLogger struct {
 // 确保zapLogger实现了Logger接口
 var _ Logger = (*zapLogger)(nil)
 
-// New 创建并返回一个Logger实例，支持函数式选项配置
-func New(opts ...Option) (Logger, error) {
-	options := &Options{
-		Level:            "info",    // 默认info级别
-		Format:           "console", // 默认控制台格式
-		OutputPaths:      []string{"stdout"},
-		ErrorPaths:       []string{"stderr"},
-		EnableCaller:     true,
-		EnableStacktrace: true,
-		StacktraceLevel:  "panic",
-		Rotation: RotationOptions{
-			Enabled:      false, // 默认不启用
-			Policy:       "time",
-			TimeInterval: "24h",
-			MaxSize:      100, // MB
-			MaxBackups:   7,
-			MaxAge:       30, // 天或分钟，根据TimeInterval决定
-			Compress:     true,
-		},
-	}
+// new 创建并返回一个Logger实例，支持函数式选项配置
+func new(opts ...Option) (Logger, error) {
+	options := &Options{}
 	for _, o := range opts {
 		o(options)
 	}
