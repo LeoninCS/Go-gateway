@@ -1,9 +1,9 @@
 package core
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 
@@ -16,6 +16,7 @@ import (
 	pl_ratelimit "gateway.example/go-gateway/internal/plugin/ratelimit"
 	svc_circuitbreaker "gateway.example/go-gateway/internal/service/circuitbreaker"
 	svc_ratelimit "gateway.example/go-gateway/internal/service/ratelimit"
+	"gateway.example/go-gateway/pkg/logger"
 )
 
 // Gateway API网关核心引擎
@@ -28,25 +29,26 @@ type Gateway struct {
 	pluginManager     *plugin.Manager            // 插件管理器
 	rateLimitSvc      svc_ratelimit.Service      // 限流服务
 	circuitBreakerSvc svc_circuitbreaker.Service // 熔断器服务
+	logger            logger.Logger              // 日志器
 }
 
 // NewGateway 创建网关实例并初始化所有组件
-func NewGateway(cfg *config.GatewayConfig) (*Gateway, error) {
+func NewGateway(cfg *config.GatewayConfig, log logger.Logger) (*Gateway, error) {
 
 	// 核心组件初始化
 	lbFactory := loadbalancer.NewLoadBalancerFactory()
-	log.Println("核心组件: 负载均衡器工厂已创建。")
+	log.Info(context.Background(), "核心组件: 负载均衡器工厂已创建。")
 
 	// 健康检查器
-	healthChecker := health.NewHealthChecker(cfg.HealthCheck.Timeout, cfg.HealthCheck.Interval)
-	log.Println("核心组件: 健康检查器已创建。")
+	healthChecker := health.NewHealthChecker(cfg.HealthCheck.Timeout, cfg.HealthCheck.Interval, log)
+	log.Info(context.Background(), "核心组件: 健康检查器已创建。")
 
 	// 限流服务
-	rateLimitSvc, err := svc_ratelimit.NewService(cfg.RateLimiting)
+	rateLimitSvc, err := svc_ratelimit.NewService(cfg.RateLimiting, log)
 	if err != nil {
 		return nil, fmt.Errorf("初始化限流服务失败: %w", err)
 	}
-	log.Println("服务层: 限流服务已成功初始化。")
+	log.Info(context.Background(), "服务层: 限流服务已成功初始化。")
 
 	// 断路器
 	// 熔断器服务初始化
@@ -54,8 +56,8 @@ func NewGateway(cfg *config.GatewayConfig) (*Gateway, error) {
 		cfg.CircuitBreaker.FailureThreshold,
 		cfg.CircuitBreaker.SuccessThreshold,
 		cfg.CircuitBreaker.ResetTimeout,
-	)
-	log.Println("服务层: 熔断器服务已成功初始化。")
+		log)
+	log.Info(context.Background(), "服务层: 熔断器服务已成功初始化。")
 
 	// 注册服务实例到健康检查器和负载均衡器
 	for _, serviceCfg := range cfg.Services {
@@ -74,61 +76,64 @@ func NewGateway(cfg *config.GatewayConfig) (*Gateway, error) {
 				Alive:  true, // 初始状态默认为健康
 			})
 		}
-		log.Printf("服务发现: 服务 '%s' 的 %d 个实例已注册。", serviceCfg.Name, len(instanceURLs))
+		log.Info(context.Background(), "服务发现: 服务已注册", "service", serviceCfg.Name, "instance_count", len(instanceURLs))
 	}
 
 	// 启动健康检查
 	go healthChecker.Start()
 
 	// 创建反向代理
-	proxy := NewProxy(lbFactory, healthChecker, circuitBreakerSvc)
-	log.Println("核心组件: 反向代理已创建并注入依赖。")
+	proxy := NewProxy(lbFactory, healthChecker, circuitBreakerSvc, log)
+	log.Info(context.Background(), "核心组件: 反向代理已创建并注入依赖。")
 
 	// 插件初始化
 	pluginManager := plugin.NewManager()
 
 	// 限流插件
-	rateLimitPlugin := pl_ratelimit.NewPlugin(rateLimitSvc)
+	rateLimitPlugin := pl_ratelimit.NewPlugin(rateLimitSvc, log)
 	pluginManager.Register(rateLimitPlugin)
-	log.Println("插件: 'rateLimit' 已成功注册。")
+	log.Info(context.Background(), "插件: 'rateLimit' 已成功注册。")
 
 	// 认证插件（如果配置了认证服务）
 	if cfg.AuthService.ValidateURL != "" {
-		authPlugin, err := pl_auth.NewPlugin(lbFactory, healthChecker, "auth-service")
+		authPlugin, err := pl_auth.NewPlugin(lbFactory, healthChecker, "auth-service", log)
 		if err != nil {
 			return nil, fmt.Errorf("初始化认证插件失败: %w", err)
 		}
 		pluginManager.Register(authPlugin)
-		log.Println("插件: 'auth' 已成功注册。")
+		log.Info(context.Background(), "插件: 'auth' 已成功注册。")
 	}
 
 	// 熔断器插件
-	circuitBreakerPlugin := pl_circuitbreaker.NewPlugin(circuitBreakerSvc)
+	circuitBreakerPlugin := pl_circuitbreaker.NewPlugin(circuitBreakerSvc, log)
 	pluginManager.Register(circuitBreakerPlugin)
-	log.Println("插件: 'circuitBreaker' 已成功注册。")
+	log.Info(context.Background(), "插件: 'circuitBreaker' 已成功注册。")
 
 	// 组装网关实例
 	gw := &Gateway{
 		config:            cfg,
-		router:            NewRouter(cfg.Routes),
+		router:            NewRouter(cfg.Routes, log),
 		proxy:             proxy,
 		healthChecker:     healthChecker,
 		pluginManager:     pluginManager,
 		rateLimitSvc:      rateLimitSvc,
 		circuitBreakerSvc: circuitBreakerSvc,
+		logger:            log,
 	}
 
-	log.Println("网关核心已成功初始化并准备就绪。")
+	log.Info(context.Background(), "网关核心已成功初始化并准备就绪。")
 	return gw, nil
 }
 
 // ServeHTTP 网关请求处理入口
 // 1. 路由匹配 → 2. 插件链执行 → 3. 反向代理转发
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	ctx := context.Background()
+
 	// 查找匹配的路由
 	route := g.router.FindRoute(r)
 	if route == nil {
-		log.Printf("[网关核心] 请求 %s %s 未匹配到任何路由", r.Method, r.URL.Path)
+		g.logger.Info(ctx, "请求未匹配到任何路由", "method", r.Method, "path", r.URL.Path)
 		http.Error(w, "服务未找到", http.StatusNotFound)
 		return
 	}
@@ -142,20 +147,20 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 查找对应服务
 	service, exists := g.config.Services[route.ServiceName]
 	if !exists {
-		log.Printf("[网关核心] 请求 %s %s 匹配到路由 '%s'，但服务 '%s' 未在配置中定义", r.Method, r.URL.Path, route.PathPrefix, route.ServiceName)
+		g.logger.Info(ctx, "请求匹配到路由但服务未在配置中定义", "method", r.Method, "path", r.URL.Path, "route", route.PathPrefix, "service", route.ServiceName)
 		http.Error(w, "服务配置错误", http.StatusInternalServerError)
 		return
 	}
-	log.Printf("[网关核心] 请求 %s %s 匹配到路由 -> 服务: %s", r.Method, r.URL.Path, service.Name)
+	g.logger.Info(ctx, "请求匹配到路由", "method", r.Method, "path", r.URL.Path, "service", service.Name)
 
 	// 执行插件链
 	continueChain, err := g.pluginManager.ExecuteChain(w, r, route.Plugins)
 	if err != nil {
-		log.Printf("[网关核心] 错误: 插件链执行因内部错误而中断: %v", err)
+		g.logger.Error(ctx, "插件链执行因内部错误而中断", "error", err)
 		return
 	}
 	if !continueChain {
-		log.Printf("[网关核心] 信息: 插件链中断请求，处理结束。")
+		g.logger.Info(ctx, "插件链中断请求，处理结束")
 		return
 	}
 
@@ -166,6 +171,8 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // HealthCheckHandler 健康检查API端点
 // 返回所有服务的健康状态
 func (g *Gateway) HealthCheckHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := context.Background()
+
 	// 获取路由配置
 	route := g.router.FindRoute(r)
 	if route == nil {
@@ -207,27 +214,28 @@ func (g *Gateway) HealthCheckHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("[网关核心] 错误: 写入健康检查响应失败: %v", err)
+		g.logger.Error(ctx, "写入健康检查响应失败", "error", err)
 	}
 }
 
 // Shutdown 优雅关闭网关
 // 停止健康检查和所有服务
 func (g *Gateway) Shutdown() {
-	log.Println("网关正在关闭...")
+	ctx := context.Background()
+	g.logger.Info(ctx, "网关正在关闭...")
 
 	// 停止健康检查
 	g.healthChecker.Shutdown()
 
 	// 关闭限流服务
 	if err := g.rateLimitSvc.Close(); err != nil {
-		log.Printf("关闭限流服务时出错: %v", err)
+		g.logger.Error(ctx, "关闭限流服务时出错", "error", err)
 	}
 
 	// 关闭熔断器服务
-	if err := g.circuitBreakerSvc.Close(); err != nil {
-		log.Printf("关闭熔断器服务时出错: %v", err)
+	if err := g.circuitBreakerSvc.Close(ctx); err != nil {
+		g.logger.Error(ctx, "关闭熔断器服务时出错", "error", err)
 	}
 
-	log.Println("网关已成功关闭。")
+	g.logger.Info(ctx, "网关已成功关闭。")
 }

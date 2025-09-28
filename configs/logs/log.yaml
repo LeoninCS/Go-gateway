@@ -59,7 +59,7 @@ rotation:
   
   # 时间轮转间隔：当策略包含time时生效
   # 可选值：minute(分钟级)、hour(小时级)、24h(天级)
-  time_interval: "minute"
+  time_interval: "hour"
   
   # 大小轮转阈值：当策略包含size时生效，单位为MB
   max_size: 100

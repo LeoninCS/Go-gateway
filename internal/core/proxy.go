@@ -2,9 +2,9 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -13,6 +13,7 @@ import (
 	"gateway.example/go-gateway/internal/core/health"
 	"gateway.example/go-gateway/internal/core/loadbalancer"
 	"gateway.example/go-gateway/internal/service/circuitbreaker"
+	"gateway.example/go-gateway/pkg/logger"
 )
 
 // Proxy 负责将请求转发到后端服务。
@@ -20,6 +21,7 @@ type Proxy struct {
 	lbFactory         *loadbalancer.LoadBalancerFactory
 	healthChecker     *health.HealthChecker
 	circuitBreakerSvc circuitbreaker.Service // 添加熔断器服务依赖
+	logger            logger.Logger          // 添加日志器
 }
 
 type responseWriterWrapper struct {
@@ -28,20 +30,22 @@ type responseWriterWrapper struct {
 }
 
 // NewProxy 创建一个新的 Proxy 实例。
-func NewProxy(lbFactory *loadbalancer.LoadBalancerFactory, hc *health.HealthChecker, cbSvc circuitbreaker.Service) *Proxy {
+func NewProxy(lbFactory *loadbalancer.LoadBalancerFactory, hc *health.HealthChecker, cbSvc circuitbreaker.Service, log logger.Logger) *Proxy {
 	return &Proxy{
 		lbFactory:         lbFactory,
 		healthChecker:     hc,
 		circuitBreakerSvc: cbSvc,
+		logger:            log,
 	}
 }
 
 // ServeHTTP 执行反向代理的核心逻辑。
-// (此函数签名已符合指针最佳实践，无需修改)
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.RouteConfig, service *config.ServiceConfig) {
-	// ★ 推荐实践: 在使用指针前进行 nil 检查，增强代码健壮性。
+	ctx := r.Context()
+
+	// 推荐实践: 在使用指针前进行 nil 检查，增强代码健壮性。
 	if service == nil {
-		log.Printf("[Proxy] 内部错误: 服务配置为 nil (路由: %s)", route.PathPrefix)
+		p.logger.Error(ctx, "[Proxy] 内部错误: 服务配置为 nil", "route", route.PathPrefix)
 		http.Error(w, "网关内部配置错误", http.StatusInternalServerError)
 		return
 	}
@@ -53,18 +57,18 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 	)
 
 	// 2. 获取一个健康的实例
-	instance, err := p.getHealthyInstance(lb, service.Name)
+	instance, err := p.getHealthyInstance(ctx, lb, service.Name)
 	if err != nil {
-		log.Printf("[Proxy] 错误: 服务 '%s' 无可用实例: %v", service.Name, err)
+		p.logger.Error(ctx, "[Proxy] 错误: 服务无可用实例", "service", service.Name, "error", err)
 		http.Error(w, fmt.Sprintf("服务 '%s' 当前不可用", service.Name), http.StatusServiceUnavailable)
 		return
 	}
-	log.Printf("[Proxy] 信息: 为服务 '%s' 选择的健康实例: %s", service.Name, instance.URL)
+	p.logger.Info(ctx, "[Proxy] 信息: 为服务选择健康实例", "service", service.Name, "instance", instance.URL)
 
 	// 3. 创建反向代理
 	targetURL, err := url.Parse(instance.URL)
 	if err != nil {
-		log.Printf("[Proxy] 内部错误: 解析实例 URL '%s' 失败: %v", instance.URL, err)
+		p.logger.Error(ctx, "[Proxy] 内部错误: 解析实例URL失败", "instance_url", instance.URL, "error", err)
 		http.Error(w, "网关内部错误", http.StatusInternalServerError)
 		return
 	}
@@ -75,7 +79,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 	proxy.Director = func(req *http.Request) {
 		originalDirector(req) // 执行默认的 host, scheme 等重写
 
-		// ★ 新增: 路径重写逻辑 - 移除路由前缀
+		// 新增: 路径重写逻辑 - 移除路由前缀
 		originalPath := req.URL.Path
 		if len(route.PathPrefix) > 0 && len(originalPath) >= len(route.PathPrefix) {
 			// 移除路径前缀，保留剩余部分
@@ -84,7 +88,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 				newPath = "/"
 			}
 			req.URL.Path = newPath
-			log.Printf("[Proxy] 路径重写: %s -> %s", originalPath, newPath)
+			p.logger.Info(req.Context(), "[Proxy] 路径重写", "original_path", originalPath, "new_path", newPath)
 		}
 
 		req.Header.Set("X-Gateway-Proxy", "true")
@@ -106,13 +110,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 	success := statusCode >= 200 && statusCode < 300
 
 	if p.circuitBreakerSvc != nil {
-		log.Printf("[Proxy] 服务 '%s' 请求完成，状态码: %d, 成功: %v", service.Name, statusCode, success)
-		p.circuitBreakerSvc.RecordResult(service.Name, success)
+		p.logger.Info(ctx, "[Proxy] 服务请求完成", "service", service.Name, "status_code", statusCode, "success", success)
+		p.circuitBreakerSvc.RecordResult(ctx, service.Name, success)
 	}
 }
 
-// getHealthyInstance 封装了“获取下一个健康实例”的逻辑 (代码无误，无需修改)
-func (p *Proxy) getHealthyInstance(lb loadbalancer.LoadBalancer, serviceName string) (*loadbalancer.ServiceInstance, error) {
+// getHealthyInstance 封装了"获取下一个健康实例"的逻辑
+func (p *Proxy) getHealthyInstance(ctx context.Context, lb loadbalancer.LoadBalancer, serviceName string) (*loadbalancer.ServiceInstance, error) {
 	allInstances := lb.GetAllInstances(serviceName)
 	if len(allInstances) == 0 {
 		return nil, errors.New("服务未注册任何实例")
@@ -130,7 +134,7 @@ func (p *Proxy) getHealthyInstance(lb loadbalancer.LoadBalancer, serviceName str
 			return instance, nil // 找到健康的实例，立即返回
 		}
 
-		log.Printf("[Proxy] 警告: 跳过不健康的实例 '%s' (服务: %s)", instance.URL, serviceName)
+		p.logger.Warn(ctx, "[Proxy] 警告: 跳过不健康的实例", "instance", instance.URL, "service", serviceName)
 	}
 
 	return nil, fmt.Errorf("在所有实例中未找到健康的实例")
@@ -140,6 +144,7 @@ func (w *responseWriterWrapper) WriteHeader(statusCode int) {
 	w.statusCode = statusCode
 	w.ResponseWriter.WriteHeader(statusCode)
 }
+
 func (w *responseWriterWrapper) GetStatusCode() int {
 	if w.statusCode == 0 {
 		// 如果没有显式设置状态码，默认认为是 200 OK

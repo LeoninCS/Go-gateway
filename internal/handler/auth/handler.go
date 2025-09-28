@@ -28,7 +28,7 @@ func (h *AuthHandler) LoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := h.authService.Login(req.Username, req.Password)
+	token, err := h.authService.Login(r.Context(), req.Username, req.Password)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
@@ -58,7 +58,7 @@ func (h *AuthHandler) ValidateHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tokenString := parts[1]
-	if h.authService.ValidateToken(tokenString) {
+	if h.authService.ValidateToken(r.Context(), tokenString) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("valid"))
 	} else {

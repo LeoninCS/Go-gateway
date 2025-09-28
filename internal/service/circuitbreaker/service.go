@@ -1,10 +1,12 @@
 package circuitbreaker
 
 import (
+	"context"
 	"errors"
-	"log"
 	"sync"
 	"time"
+
+	"gateway.example/go-gateway/pkg/logger"
 )
 
 // 全局错误定义
@@ -51,11 +53,11 @@ type CircuitState struct {
 
 // Service 熔断器服务接口（定义核心能力，解耦实现与调用）
 type Service interface {
-	CheckCircuit(serviceName string) (bool, error) // 检查是否允许请求
-	RecordResult(serviceName string, success bool) // 记录请求结果（成功/失败）
-	GetAllState() map[string]CircuitState          // 获取所有服务的熔断器状态
-	Reset(serviceName string) error                // 重置指定服务的熔断器
-	Close() error                                  // 优雅关闭服务（清理资源）
+	CheckCircuit(ctx context.Context, serviceName string) (bool, error) // 检查是否允许请求
+	RecordResult(ctx context.Context, serviceName string, success bool) // 记录请求结果（成功/失败）
+	GetAllState(ctx context.Context) map[string]CircuitState            // 获取所有服务的熔断器状态
+	Reset(ctx context.Context, serviceName string) error                // 重置指定服务的熔断器
+	Close(ctx context.Context) error                                    // 优雅关闭服务（清理资源）
 }
 
 // CircuitBreaker 单个服务的熔断器实例（承载单个服务的状态）
@@ -74,10 +76,11 @@ type service struct {
 	FailureThreshold int                        // 全局失败阈值（默认5次）
 	SuccessThreshold int                        // 全局成功阈值（默认2次）
 	ResetTimeout     time.Duration              // 全局重置超时时间（默认1分钟）
+	log              logger.Logger              // 日志记录器
 }
 
 // NewService 创建熔断器服务实例（返回接口类型，隐藏内部实现）
-func NewService(failureThreshold int, successThreshold int, resetTimeout time.Duration) Service {
+func NewService(failureThreshold int, successThreshold int, resetTimeout time.Duration, log logger.Logger) Service {
 	// 配置默认值（避免传入非法参数）
 	if failureThreshold <= 0 {
 		failureThreshold = 5
@@ -90,16 +93,25 @@ func NewService(failureThreshold int, successThreshold int, resetTimeout time.Du
 	}
 
 	// 初始化服务实例，创建熔断器映射
-	return &service{
+	svc := &service{
 		circuitBreakers:  make(map[string]*CircuitBreaker),
 		FailureThreshold: failureThreshold,
 		SuccessThreshold: successThreshold,
 		ResetTimeout:     resetTimeout,
+		log:              log,
 	}
+
+	log.Info(context.Background(), "Circuit breaker service initialized",
+		"failure_threshold", failureThreshold,
+		"success_threshold", successThreshold,
+		"reset_timeout", resetTimeout.String(),
+		"service", "circuitbreaker")
+
+	return svc
 }
 
 // GetAllState 返回所有服务的熔断器状态（对外展示用）
-func (s *service) GetAllState() map[string]CircuitState {
+func (s *service) GetAllState(ctx context.Context) map[string]CircuitState {
 	s.mu.RLock() // 读锁：仅查询，不修改映射
 	defer s.mu.RUnlock()
 
@@ -119,16 +131,26 @@ func (s *service) GetAllState() map[string]CircuitState {
 		}
 		cb.mu.Unlock()
 	}
+
+	s.log.Debug(ctx, "Retrieved all circuit breaker states",
+		"total_services", len(result),
+		"service", "circuitbreaker",
+		"action", "get_all_states")
+
 	return result
 }
 
 // Reset 重置指定服务的熔断器（状态归位，计数清零）
-func (s *service) Reset(serviceName string) error {
+func (s *service) Reset(ctx context.Context, serviceName string) error {
 	s.mu.RLock() // 读锁：查询熔断器是否存在
 	cb, exists := s.circuitBreakers[serviceName]
 	s.mu.RUnlock()
 
 	if !exists {
+		s.log.Error(ctx, "Service not found in circuit breaker",
+			"service_name", serviceName,
+			"service", "circuitbreaker",
+			"action", "reset_failed")
 		return ErrServiceNotFound
 	}
 
@@ -138,19 +160,28 @@ func (s *service) Reset(serviceName string) error {
 	cb.state = StateClosed
 	cb.failureCount = 0
 	cb.successCount = 0
-	log.Printf("[熔断器服务] 已重置服务 '%s' 的熔断器", serviceName)
+
+	s.log.Info(ctx, "Circuit breaker reset successfully",
+		"service_name", serviceName,
+		"service", "circuitbreaker",
+		"action", "reset_success")
+
 	return nil
 }
 
 // CheckCircuit 检查指定服务的熔断器状态，返回是否允许请求
-func (s *service) CheckCircuit(serviceName string) (bool, error) {
+func (s *service) CheckCircuit(ctx context.Context, serviceName string) (bool, error) {
 	// 1. 确保服务的熔断器实例存在（不存在则创建）
 	s.mu.Lock()
 	cb, exists := s.circuitBreakers[serviceName]
 	if !exists {
 		cb = &CircuitBreaker{state: StateClosed} // 新熔断器默认处于关闭状态
 		s.circuitBreakers[serviceName] = cb
-		log.Printf("[熔断器服务] 为服务 '%s' 初始化熔断器", serviceName)
+		s.log.Info(ctx, "Initialized circuit breaker for service",
+			"service_name", serviceName,
+			"initial_state", "closed",
+			"service", "circuitbreaker",
+			"action", "initialize")
 	}
 	s.mu.Unlock()
 
@@ -162,39 +193,67 @@ func (s *service) CheckCircuit(serviceName string) (bool, error) {
 	case StateOpen:
 		// 打开状态：检查是否超过重置超时时间，超时则进入半开
 		if time.Since(cb.lastOpenTime) > s.ResetTimeout {
+			oldState := cb.state.GetState()
 			cb.state = StateHalfOpen
 			cb.failureCount = 0
 			cb.successCount = 0
-			log.Printf("[熔断器服务] 服务 '%s' 熔断器从 open 转为 half-open", serviceName)
+			s.log.Info(ctx, "Circuit breaker state transition",
+				"service_name", serviceName,
+				"old_state", oldState,
+				"new_state", cb.state.GetState(),
+				"service", "circuitbreaker",
+				"action", "state_transition")
 			return true, nil // 半开状态允许试探请求
 		}
 		// 未超时：拒绝请求
+		s.log.Debug(ctx, "Circuit breaker is open, request rejected",
+			"service_name", serviceName,
+			"time_since_open", time.Since(cb.lastOpenTime).String(),
+			"reset_timeout", s.ResetTimeout.String(),
+			"service", "circuitbreaker",
+			"action", "request_rejected")
 		return false, ErrOpenState
 
 	case StateHalfOpen:
 		// 半开状态：允许请求（试探）
+		s.log.Debug(ctx, "Circuit breaker is half-open, allowing probe request",
+			"service_name", serviceName,
+			"service", "circuitbreaker",
+			"action", "request_allowed")
 		return true, nil
 
 	case StateClosed:
 		// 关闭状态：允许请求
+		s.log.Debug(ctx, "Circuit breaker is closed, allowing request",
+			"service_name", serviceName,
+			"service", "circuitbreaker",
+			"action", "request_allowed")
 		return true, nil
 
 	default:
 		// 未知状态：默认允许请求（降级策略）
-		log.Printf("[熔断器服务] 服务 '%s' 熔断器状态未知，默认允许请求", serviceName)
+		s.log.Warn(ctx, "Circuit breaker state unknown, allowing request by default",
+			"service_name", serviceName,
+			"state", "unknown",
+			"service", "circuitbreaker",
+			"action", "request_allowed_fallback")
 		return true, nil
 	}
 }
 
 // RecordResult 记录指定服务的请求结果，更新熔断器状态
-func (s *service) RecordResult(serviceName string, success bool) {
+func (s *service) RecordResult(ctx context.Context, serviceName string, success bool) {
 	// 1. 检查服务的熔断器是否存在（不存在则忽略，避免无意义操作）
 	s.mu.RLock()
 	cb, exists := s.circuitBreakers[serviceName]
 	s.mu.RUnlock()
 
 	if !exists {
-		log.Printf("[熔断器服务] 服务 '%s' 未初始化熔断器，忽略结果记录", serviceName)
+		s.log.Warn(ctx, "Service circuit breaker not initialized, ignoring result recording",
+			"service_name", serviceName,
+			"success", success,
+			"service", "circuitbreaker",
+			"action", "record_ignored")
 		return
 	}
 
@@ -205,41 +264,78 @@ func (s *service) RecordResult(serviceName string, success bool) {
 	if success {
 		// 成功场景：处理半开状态的成功计数
 		cb.successCount++
-		log.Printf("[熔断器服务] 服务 '%s' 请求成功，当前成功计数: %d", serviceName, cb.successCount)
+		s.log.Debug(ctx, "Service request succeeded",
+			"service_name", serviceName,
+			"success_count", cb.successCount,
+			"current_state", cb.state.GetState(),
+			"service", "circuitbreaker",
+			"action", "record_success")
 
 		// 半开状态下，成功次数达到阈值则转为关闭
 		if cb.state == StateHalfOpen && cb.successCount >= s.SuccessThreshold {
+			oldState := cb.state.GetState()
 			cb.state = StateClosed
 			cb.failureCount = 0
 			cb.successCount = 0
-			log.Printf("[熔断器服务] 服务 '%s' 熔断器从 half-open 转为 closed", serviceName)
+			s.log.Info(ctx, "Circuit breaker state transition",
+				"service_name", serviceName,
+				"old_state", oldState,
+				"new_state", cb.state.GetState(),
+				"success_threshold", s.SuccessThreshold,
+				"service", "circuitbreaker",
+				"action", "state_transition")
 		}
 
 	} else {
 		// 失败场景：处理关闭/半开状态的失败计数
 		cb.failureCount++
-		log.Printf("[熔断器服务] 服务 '%s' 请求失败，当前失败计数: %d", serviceName, cb.failureCount)
+		s.log.Debug(ctx, "Service request failed",
+			"service_name", serviceName,
+			"failure_count", cb.failureCount,
+			"current_state", cb.state.GetState(),
+			"service", "circuitbreaker",
+			"action", "record_failure")
 
 		// 关闭状态下，失败次数达到阈值则转为打开
 		if cb.state == StateClosed && cb.failureCount >= s.FailureThreshold {
+			oldState := cb.state.GetState()
 			cb.state = StateOpen
 			cb.lastOpenTime = time.Now()
-			log.Printf("[熔断器服务] 服务 '%s' 熔断器从 closed 转为 open", serviceName)
+			s.log.Warn(ctx, "Circuit breaker state transition",
+				"service_name", serviceName,
+				"old_state", oldState,
+				"new_state", cb.state.GetState(),
+				"failure_threshold", s.FailureThreshold,
+				"service", "circuitbreaker",
+				"action", "state_transition")
 		}
 
 		// 半开状态下，只要失败就立即转为打开
 		if cb.state == StateHalfOpen {
+			oldState := cb.state.GetState()
 			cb.state = StateOpen
 			cb.lastOpenTime = time.Now()
-			log.Printf("[熔断器服务] 服务 '%s' 熔断器从 half-open 转为 open", serviceName)
+			s.log.Warn(ctx, "Circuit breaker state transition",
+				"service_name", serviceName,
+				"old_state", oldState,
+				"new_state", cb.state.GetState(),
+				"service", "circuitbreaker",
+				"action", "state_transition")
 		}
 	}
 }
 
 // Close 优雅关闭熔断器服务（清理资源，此处无长期后台任务，主要用于日志和扩展）
-func (s *service) Close() error {
-	log.Println("[熔断器服务] 开始优雅关闭...")
+func (s *service) Close(ctx context.Context) error {
+	s.log.Info(ctx, "Starting graceful shutdown of circuit breaker service",
+		"total_services", len(s.circuitBreakers),
+		"service", "circuitbreaker",
+		"action", "shutdown_start")
+
 	// 若后续添加了后台任务（如定期清理过期熔断器），可在此处通过 context 取消任务
-	log.Println("[熔断器服务] 已成功关闭")
+
+	s.log.Info(ctx, "Circuit breaker service shutdown completed",
+		"service", "circuitbreaker",
+		"action", "shutdown_complete")
 	return nil
 }

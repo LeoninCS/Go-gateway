@@ -3,7 +3,6 @@ package auth
 
 import (
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -11,6 +10,7 @@ import (
 	"gateway.example/go-gateway/internal/config" // ★ 引入 config 包
 	"gateway.example/go-gateway/internal/core/health"
 	"gateway.example/go-gateway/internal/core/loadbalancer"
+	"gateway.example/go-gateway/pkg/logger"
 )
 
 const (
@@ -23,10 +23,14 @@ type Plugin struct {
 	lbFactory     *loadbalancer.LoadBalancerFactory
 	healthChecker *health.HealthChecker
 	serviceName   string
+	log           logger.Logger
 }
 
 // NewPlugin 创建一个新的认证插件实例
-func NewPlugin(lbFactory *loadbalancer.LoadBalancerFactory, hc *health.HealthChecker, serviceName string) (*Plugin, error) {
+func NewPlugin(lbFactory *loadbalancer.LoadBalancerFactory, hc *health.HealthChecker, serviceName string, log logger.Logger) (*Plugin, error) {
+	if lbFactory == nil || hc == nil || serviceName == "" || log == nil {
+		return nil, fmt.Errorf("插件初始化参数缺失: lbFactory, hc, serviceName, log 不能为空")
+	}
 	return &Plugin{
 		client: &http.Client{
 			Timeout: 5 * time.Second,
@@ -42,12 +46,12 @@ func (p *Plugin) Execute(w http.ResponseWriter, r *http.Request, pluginCfg confi
 	// (未使用 pluginCfg 参数，但签名必须匹配)
 	_ = pluginCfg
 
-	log.Printf("[插件: %s] 开始执行...", p.Name())
+	p.log.Info(r.Context(), "[插件: %s] 开始执行...", p.Name())
 
 	// 1. --- 从 Header 中获取 Authorization ---
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
-		log.Printf("[插件: %s] 未授权: 缺少 Authorization 请求头", p.Name())
+		p.log.Info(r.Context(), "[插件: %s] 未授权: 缺少 Authorization 请求头", p.Name())
 		http.Error(w, "Unauthorized: Authorization header required", http.StatusUnauthorized)
 		return false, nil // 中断执行链
 	}
@@ -55,7 +59,7 @@ func (p *Plugin) Execute(w http.ResponseWriter, r *http.Request, pluginCfg confi
 	// 2. --- 校验 "Bearer " 前缀并提取 token ---
 	parts := strings.Split(authHeader, " ")
 	if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
-		log.Printf("[插件: %s] 未授权: Authorization 请求头格式无效", p.Name())
+		p.log.Info(r.Context(), "[插件: %s] 未授权: Authorization 请求头格式无效", p.Name())
 		http.Error(w, `Unauthorized: Invalid Authorization header format (expected "Bearer <token>")`, http.StatusUnauthorized)
 		return false, nil
 	}
@@ -64,7 +68,7 @@ func (p *Plugin) Execute(w http.ResponseWriter, r *http.Request, pluginCfg confi
 	lb := p.lbFactory.GetOrCreateLoadBalancer(p.serviceName, "round_robin")
 	instance, err := p.getHealthyInstance(lb)
 	if err != nil {
-		log.Printf("[插件: %s] 服务不可用: 无法获取健康实例: %v", p.Name(), err)
+		p.log.Info(r.Context(), "[插件: %s] 服务不可用: 无法获取健康实例: %v", p.Name(), err)
 		http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
 		return false, err
 	}
@@ -74,7 +78,7 @@ func (p *Plugin) Execute(w http.ResponseWriter, r *http.Request, pluginCfg confi
 	validateURL := instance.URL + "/validate"
 	req, err := http.NewRequestWithContext(r.Context(), "POST", validateURL, nil)
 	if err != nil {
-		log.Printf("[插件: %s] 内部错误: 创建 HTTP 请求失败: %v", p.Name(), err)
+		p.log.Info(r.Context(), "[插件: %s] 内部错误: 创建 HTTP 请求失败: %v", p.Name(), err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return false, fmt.Errorf("创建认证 HTTP 请求失败: %w", err)
 	}
@@ -82,7 +86,7 @@ func (p *Plugin) Execute(w http.ResponseWriter, r *http.Request, pluginCfg confi
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		log.Printf("[插件: %s] 服务不可用: 调用认证服务失败: %v", p.Name(), err)
+		p.log.Info(r.Context(), "[插件: %s] 服务不可用: 调用认证服务失败: %v", p.Name(), err)
 		http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
 		return false, err
 	}
@@ -90,11 +94,11 @@ func (p *Plugin) Execute(w http.ResponseWriter, r *http.Request, pluginCfg confi
 
 	// 5. --- 根据 auth-service 的响应决定是否放行 ---
 	if resp.StatusCode == http.StatusOK {
-		log.Printf("[插件: %s] 授权成功: Token 有效", p.Name())
+		p.log.Info(r.Context(), "[插件: %s] 授权成功: Token 有效", p.Name())
 		return true, nil // 成功，继续执行
 	}
 
-	log.Printf("[插件: %s] 未授权: Token 无效 (认证服务返回状态码 %d)", p.Name(), resp.StatusCode)
+	p.log.Info(r.Context(), "[插件: %s] 未授权: Token 无效 (认证服务返回状态码 %d)", p.Name(), resp.StatusCode)
 	http.Error(w, "Unauthorized", http.StatusUnauthorized)
 	return false, nil
 }

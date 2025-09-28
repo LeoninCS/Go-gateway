@@ -1,26 +1,29 @@
 package circuitbreaker
 
 import (
+	"context"
 	"fmt"
-	"log"
 	"net/http"
 
 	"gateway.example/go-gateway/internal/config"
 	pl_circuitbreaker "gateway.example/go-gateway/internal/service/circuitbreaker"
+	"gateway.example/go-gateway/pkg/logger"
 )
 
 const PluginName = "circuitbreaker"
 
 type Plugin struct {
 	circuitBreakerSvc pl_circuitbreaker.Service
+	log               logger.Logger
 }
 
-func NewPlugin(svc pl_circuitbreaker.Service) *Plugin {
+func NewPlugin(svc pl_circuitbreaker.Service, log logger.Logger) *Plugin {
 	if svc == nil {
-		log.Fatalf("[插件 %s] 致命错误: circuitbreaker.Service 依赖注入失败，为 nil", PluginName)
+		log.Fatal(context.Background(), "[插件 %s] 致命错误: circuitbreaker.Service 依赖注入失败，为 nil", PluginName)
 	}
 	return &Plugin{
 		circuitBreakerSvc: svc,
+		log:               log,
 	}
 }
 
@@ -29,26 +32,31 @@ func (p *Plugin) Name() string {
 }
 
 func (p *Plugin) Execute(w http.ResponseWriter, r *http.Request, pluginCfg config.PluginSpec) (bool, error) {
+	ctx := r.Context()
+
 	// 1. 解析插件配置
 	serviceName, err := p.parseConfig(pluginCfg)
 	if err != nil {
+		p.log.Error(ctx, "[插件] 熔断插件配置错误", "plugin", p.Name(), "error", err)
 		http.Error(w, "熔断插件配置错误", http.StatusInternalServerError)
 		return false, fmt.Errorf("[插件 %s] %w", p.Name(), err)
 	}
 
 	// 2. 检查熔断状态
-	allowed, err := p.circuitBreakerSvc.CheckCircuit(serviceName)
+	allowed, err := p.circuitBreakerSvc.CheckCircuit(ctx, serviceName)
 	if err != nil {
+		p.log.Error(ctx, "[插件] 调用熔断服务失败", "plugin", p.Name(), "service", serviceName, "error", err)
 		http.Error(w, "熔断服务内部错误", http.StatusInternalServerError)
 		return false, fmt.Errorf("[插件 %s] 调用熔断服务失败: %w", p.Name(), err)
 	}
 
 	if !allowed {
-		log.Printf("[插件 %s] 请求被熔断: [服务: %s]", p.Name(), serviceName)
+		p.log.Warn(ctx, "[插件] 请求被熔断", "plugin", p.Name(), "service", serviceName)
 		http.Error(w, "服务暂时不可用", http.StatusServiceUnavailable)
 		return false, nil // 中断插件链
 	}
 
+	p.log.Info(ctx, "[插件] 熔断检查通过", "plugin", p.Name(), "service", serviceName)
 	return true, nil // 继续下一个插件
 }
 

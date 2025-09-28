@@ -3,24 +3,29 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 	"time"
+
+	"gateway.example/go-gateway/pkg/logger"
 )
+
+var log logger.Logger
 
 func mainHandler(w http.ResponseWriter, r *http.Request) {
 	port := getPort()
-	log.Printf("Service A (%s) received request for: %s", port, r.URL.Path)
+	ctx := context.Background()
+	log.Info(ctx, "Service A received request", "port", port, "path", r.URL.Path)
 	fmt.Fprintf(w, "Hello from Service A at port %s, path: %s\n", port, r.URL.Path)
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	port := getPort()
-	log.Printf("Service A (%s) received request for: /healthz", port)
+	ctx := context.Background()
+	log.Info(ctx, "Service A received health check request", "port", port)
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintln(w, "OK")
 }
@@ -38,6 +43,14 @@ func getPort() string {
 }
 
 func main() {
+	// 初始化自定义日志器
+	var err error
+	log, err = logger.NewWithConfigFile("./configs/logs/service-a-log.yaml")
+	if err != nil {
+		panic(err)
+	}
+	ctx := context.Background()
+
 	port := getPort()
 
 	mux := http.NewServeMux()
@@ -52,21 +65,21 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("Starting Service A on %s", port)
+		log.Info(ctx, "Starting Service A", "port", port)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Could not start Service A: %v", err)
+			log.Fatal(ctx, "Could not start Service A", "error", err)
 		}
 	}()
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
-	log.Println("Service A is shutting down...")
+	log.Info(ctx, "Service A is shutting down...")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := server.Shutdown(ctx); err != nil {
-		log.Printf("Server shutdown error: %v", err)
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Info(ctx, "Server shutdown error", "error", err)
 	}
-	log.Println("Service A stopped")
+	log.Info(ctx, "Service A stopped")
 }

@@ -1,0 +1,41 @@
+# ==============================================================================
+# Service A 日志配置
+# ==============================================================================
+
+# 日志级别. 可选: debug, info, warn, error, dpanic, panic, fatal
+level: "info"
+# 日志格式. 可选: json, console
+format: "json"
+
+# 是否记录代码位置 (文件和行号)
+enable_caller: true
+# 是否记录堆栈信息
+enable_stacktrace: true
+# 记录堆栈的起始级别. 可选值同 'level'
+stacktrace_level: "error"
+
+# 日志轮转配置
+rotation:
+  # 是否启用日志轮转
+  enabled: true
+  # 轮转策略. 可选: time, size, size_and_time
+  policy: "size_and_time"
+  # 时间轮转间隔 (当 policy 含 'time'). 可选: minute, hour, 24h
+  time_interval: "hour"
+  # 单文件最大体积 (当 policy 含 'size'), 单位: MB
+  max_size: 100
+  # 最多保留的备份文件数
+  max_backups: 7
+  # 文件最大保留时间. 单位由 time_interval 决定 (例如: policy为hour, 此处单位为小时)
+  max_age: 1
+  # 是否压缩归档的日志文件
+  compress: true
+
+# 日志输出位置 (可多选, 'stdout' 为标准输出)
+output_paths:
+  - "stdout"
+  - "/home/leon/GoCode/go-gateway/logs/service-a/app.log"
+
+# 错误及以上级别日志的独立输出位置
+error_paths:
+  - "/home/leon/GoCode/go-gateway/logs/service-a/error.log"
