@@ -38,6 +38,7 @@ func NewPlugin(lbFactory *loadbalancer.LoadBalancerFactory, hc *health.HealthChe
 		lbFactory:     lbFactory,
 		healthChecker: hc,
 		serviceName:   serviceName,
+		log:           log,
 	}, nil
 }
 
