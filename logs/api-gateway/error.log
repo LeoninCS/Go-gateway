@@ -1,1 +1,1 @@
-{"level":"error","ts":"2025-09-29T14:55:47.452+0800","msg":"Ignored key without a value.","ignored":5,"stacktrace":"gateway.example/go-gateway/pkg/logger.(*zapLogger).Info\n\t/home/leon/GoCode/go-gateway/pkg/logger/logger.go:287\ngateway.example/go-gateway/internal/core.NewRouter\n\t/home/leon/GoCode/go-gateway/internal/core/router.go:23\ngateway.example/go-gateway/internal/core.NewGateway\n\t/home/leon/GoCode/go-gateway/internal/core/gateway.go:115\nmain.main\n\t/home/leon/GoCode/go-gateway/cmd/api-gateway/main.go:32\nruntime.main\n\t/usr/local/go/src/runtime/proc.go:283"}
+
