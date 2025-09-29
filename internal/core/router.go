@@ -3,6 +3,7 @@ package core
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -20,7 +21,7 @@ type Router struct {
 
 // NewRouter 创建并初始化一个新的路由器实例
 func NewRouter(routes []*config.RouteConfig, log logger.Logger) *Router {
-	log.Info(context.Background(), "核心组件: 路由器已初始化，共加载 %d 条路由规则。", len(routes))
+	log.Info(context.Background(), fmt.Sprintf("核心组件: 路由器已初始化，共加载 %d 条路由规则。", len(routes)))
 	return &Router{
 		routes: routes,
 		log:    log,

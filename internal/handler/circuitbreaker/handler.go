@@ -2,6 +2,7 @@ package circuitbreaker
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"gateway.example/go-gateway/internal/config"
@@ -49,7 +50,7 @@ func (h *CircuitBreakerHandler) Reset(w http.ResponseWriter, r *http.Request) {
 	}
 	err := h.svc.Reset(r.Context(), serviceName)
 	if err != nil {
-		h.log.Error(r.Context(), "[Handler] 重置服务 %s 时出错", "service", serviceName, "error", err)
+		h.log.Error(r.Context(), fmt.Sprintf("[Handler] 重置服务 %s 时出错", serviceName), "service", serviceName, "error", err)
 		http.Error(w, "重置熔断器失败", http.StatusInternalServerError)
 		return
 	}

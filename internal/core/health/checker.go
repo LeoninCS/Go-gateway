@@ -2,6 +2,7 @@ package health
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -119,7 +120,7 @@ func (h *HealthChecker) updateInstanceStatus(ctx context.Context, serviceName st
 		if !isHealthy {
 			statusStr = "不健康"
 		}
-		h.log.Info(ctx, "[HealthChecker] 状态变更 -> 服务: %s, 实例: %s, 当前状态: %s", serviceName, url, statusStr)
+		h.log.Info(ctx, fmt.Sprintf("[HealthChecker] 状态变更 -> 服务: %s, 实例: %s, 当前状态: %s", serviceName, url, statusStr))
 		info.Status[url] = isHealthy
 	}
 }

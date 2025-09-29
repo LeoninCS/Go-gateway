@@ -19,7 +19,7 @@ type Plugin struct {
 
 func NewPlugin(svc pl_circuitbreaker.Service, log logger.Logger) *Plugin {
 	if svc == nil {
-		log.Fatal(context.Background(), "[插件 %s] 致命错误: circuitbreaker.Service 依赖注入失败，为 nil", PluginName)
+		log.Fatal(context.Background(), fmt.Sprintf("[插件 %s] 致命错误: circuitbreaker.Service 依赖注入失败，为 nil", PluginName))
 	}
 	return &Plugin{
 		circuitBreakerSvc: svc,

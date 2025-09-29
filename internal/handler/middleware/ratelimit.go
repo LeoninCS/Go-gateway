@@ -2,6 +2,7 @@
 package middleware
 
 import (
+	"fmt"
 	"net/http"
 
 	"gateway.example/go-gateway/internal/core/limiter"
@@ -21,20 +22,20 @@ func NewRateLimiter(
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			identifier := identifierFunc(r)
 			if identifier == "" {
-				log.Warn(r.Context(), "[WARN] RateLimit: 无法从请求 '%s' 中为规则 '%s' 提取标识符", r.URL.Path, ruleName)
+				log.Warn(r.Context(), fmt.Sprintf("[WARN] RateLimit: 无法从请求 '%s' 中为规则 '%s' 提取标识符", r.URL.Path, ruleName))
 				next.ServeHTTP(w, r) // 无法识别则放行，或根据策略拒绝
 				return
 			}
 
 			allowed, err := svc.CheckLimit(r.Context(), ruleName, identifier)
 			if err != nil {
-				log.Error(r.Context(), "[ERROR] RateLimit: 检查限流时出错: %v", err)
+				log.Error(r.Context(), fmt.Sprintf("[ERROR] RateLimit: 检查限流时出错: %v", err))
 				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 				return
 			}
 
 			if !allowed {
-				log.Info(r.Context(), "[INFO] RateLimit: 请求被拒绝. 规则: '%s', 标识符: '%s'", ruleName, identifier)
+				log.Info(r.Context(), fmt.Sprintf("[INFO] RateLimit: 请求被拒绝. 规则: '%s', 标识符: '%s'", ruleName, identifier))
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusTooManyRequests)
 				w.Write([]byte(`{"error": "Too Many Requests"}`))

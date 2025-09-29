@@ -28,7 +28,7 @@ type Plugin struct {
 // NewPlugin 创建一个新的限流插件实例
 func NewPlugin(svc svc_ratelimit.Service, log logger.Logger) *Plugin {
 	if svc == nil {
-		log.Fatal(context.Background(), "[插件 %s] 致命错误: ratelimit.Service 依赖注入失败，为 nil", PluginName)
+		log.Fatal(context.Background(), fmt.Sprintf("[插件 %s] 致命错误: ratelimit.Service 依赖注入失败，为 nil", PluginName))
 	}
 	return &Plugin{
 		rateLimitSvc: svc,

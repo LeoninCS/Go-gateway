@@ -13,7 +13,7 @@ import (
 
 // DefaultNew 使用默认配置创建并返回一个Logger实例
 func DefaultNew() (Logger, error) {
-	return NewWithConfigFile("configs/log.yaml")
+	return NewWithConfigFile("configs/logs/log.yaml")
 }
 
 // NewWithConfigFile 从YAML配置文件创建并返回一个Logger实例

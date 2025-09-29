@@ -1,0 +1,8 @@
+{"level":"info","ts":"2025-09-29T14:55:47.443+0800","msg":"Starting Service A","port":":8081"}
+{"level":"info","ts":"2025-09-29T14:55:47.445+0800","msg":"Starting Service A","port":":8082"}
+{"level":"info","ts":"2025-09-29T14:56:02.469+0800","msg":"Service A received health check request","port":":8081"}
+{"level":"info","ts":"2025-09-29T14:56:02.469+0800","msg":"Service A received health check request","port":":8082"}
+{"level":"info","ts":"2025-09-29T14:56:04.519+0800","msg":"Service A is shutting down..."}
+{"level":"info","ts":"2025-09-29T14:56:04.519+0800","msg":"Service A stopped"}
+{"level":"info","ts":"2025-09-29T14:56:04.520+0800","msg":"Service A is shutting down..."}
+{"level":"info","ts":"2025-09-29T14:56:04.520+0800","msg":"Service A stopped"}
